@@ -29,7 +29,7 @@ YOUR RULES — follow these strictly:
  */
 async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone) {
   const apiKey    = process.env.GEMINI_API_KEY;
-  const modelName = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
 
   if (!apiKey) throw new Error('GEMINI_API_KEY not set in .env — get one free at aistudio.google.com');
 
