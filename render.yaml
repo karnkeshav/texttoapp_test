@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: appbuilder
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        generateValue: false          # Render injects PORT automatically
+      - key: ANTHROPIC_API_KEY
+        sync: false                   # Set manually in Render dashboard
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CALLBACK_URL
+        sync: false                   # Set to https://your-app.onrender.com/auth/github/callback
+      - key: ANTIGRAVITY_API_KEY
+        sync: false
+      - key: ANTIGRAVITY_API_ENDPOINT
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true           # Render auto-generates a secure random value
