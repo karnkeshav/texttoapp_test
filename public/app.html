@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AppBuilder — Build Your App</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<div class="app-layout">
+
+  <!-- ── Sidebar overlay (mobile) ── -->
+  <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>
+
+  <!-- ══ SIDEBAR ══ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo nav-logo">
+        <span class="logo-icon">⚡</span>
+        <span class="logo-text">AppBuilder</span>
+      </div>
+      <button class="sidebar-logout" style="width:auto;padding:6px 10px;border-radius:8px;" onclick="closeSidebar()" title="Close">✕</button>
+    </div>
+
+    <!-- User info -->
+    <div class="sidebar-user" id="sidebarUser">
+      <div class="user-avatar" id="userAvatar">?</div>
+      <div class="user-info">
+        <div class="user-name" id="userName">Loading...</div>
+        <div class="user-sub">GitHub connected</div>
+      </div>
+    </div>
+
+    <!-- Repo selector -->
+    <div class="sidebar-section">
+      <div class="sidebar-section-label">Your repository</div>
+    </div>
+    <div class="repo-selector">
+      <button class="repo-select-btn" onclick="toggleRepoDropdown()" id="repoSelectBtn">
+        <span class="repo-icon">📁</span>
+        <span class="repo-name" id="repoName">Select a repository…</span>
+        <svg class="repo-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+      </button>
+      <div class="repo-dropdown" id="repoDropdown">
+        <input
+          type="text"
+          class="repo-search-input"
+          placeholder="Search repositories…"
+          id="repoSearch"
+          oninput="filterRepos()"
+          autocomplete="off"
+        />
+        <div class="repo-list" id="repoList">
+          <div class="repo-loading">Loading repositories…</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sidebar-section" style="margin-top:8px;">
+      <div class="sidebar-section-label">About</div>
+      <p style="font-size:12px;color:var(--text-3);line-height:1.7;">
+        AppBuilder creates complete HTML + JavaScript websites and deploys them to GitHub Pages for free.
+      </p>
+    </div>
+
+    <div class="sidebar-footer">
+      <a href="/auth/logout" class="sidebar-logout">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
+        Sign out
+      </a>
+    </div>
+  </aside>
+
+  <!-- ══ MAIN CHAT ══ -->
+  <main class="chat-main">
+    <!-- Topbar -->
+    <div class="chat-topbar">
+      <div style="display:flex;align-items:center;gap:12px;">
+        <button class="sidebar-toggle" onclick="openSidebar()" aria-label="Menu">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h18M3 6h18M3 18h18"/></svg>
+        </button>
+        <div>
+          <div class="chat-topbar-title">AppBuilder</div>
+          <div class="chat-topbar-sub" id="topbarSub">Select a repository to begin</div>
+        </div>
+      </div>
+      <div class="topbar-status">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Ready</span>
+      </div>
+    </div>
+
+    <!-- Messages -->
+    <div class="chat-messages" id="chatMessages">
+      <!-- Welcome screen (shown when no messages) -->
+      <div class="welcome-screen" id="welcomeScreen">
+        <div class="welcome-icon">⚡</div>
+        <h2 class="welcome-title">What do you want to build?</h2>
+        <p class="welcome-sub">
+          Describe any app or website in plain English. AppBuilder will ask you a few questions, then create your complete, live website — completely free.
+        </p>
+        <div class="welcome-repo-warning" id="repoWarning" style="display:none;">
+          <span>⚠️</span>
+          <span>Please select a GitHub repository in the sidebar first.</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Input area -->
+    <div class="chat-input-area">
+      <div class="chat-input-wrapper">
+        <textarea
+          class="chat-input-box"
+          id="chatInput"
+          placeholder="Describe the app you want to build… (e.g. 'A recipe website with a search bar and dark theme')"
+          rows="1"
+          onkeydown="handleInputKeydown(event)"
+          oninput="autoResize(this)"
+        ></textarea>
+        <button class="chat-send-btn" id="sendBtn" onclick="sendMessage()" aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M22 2L11 13M22 2L15 22l-4-9-9-4 20-7z"/></svg>
+        </button>
+      </div>
+      <div class="chat-input-hint">Press <kbd style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;">Enter</kbd> to send &nbsp;·&nbsp; <kbd style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:1px 6px;font-size:11px;">Shift+Enter</kbd> for new line</div>
+    </div>
+  </main>
+</div>
+
+<script src="js/app.js"></script>
+</body>
+</html>
