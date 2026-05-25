@@ -1,0 +1,123 @@
+const { Octokit } = require('@octokit/rest');
+
+function getOctokit(accessToken) {
+  return new Octokit({ auth: accessToken });
+}
+
+async function listRepos(accessToken) {
+  const octokit = getOctokit(accessToken);
+  const { data } = await octokit.repos.listForAuthenticatedUser({
+    sort: 'updated',
+    per_page: 50,
+    type: 'all',
+  });
+  return data.map((r) => ({
+    id: r.id,
+    name: r.name,
+    fullName: r.full_name,
+    private: r.private,
+    url: r.html_url,
+    defaultBranch: r.default_branch,
+    description: r.description,
+  }));
+}
+
+async function getUser(accessToken) {
+  const octokit = getOctokit(accessToken);
+  const { data } = await octokit.users.getAuthenticated();
+  return { login: data.login, name: data.name, avatarUrl: data.avatar_url };
+}
+
+/**
+ * Push a set of files to the repo's main branch.
+ * files: [{ path: 'index.html', content: '...' }, ...]
+ */
+async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add app files via AppBuilder') {
+  const octokit = getOctokit(accessToken);
+
+  // Get the current HEAD commit SHA
+  let latestSha;
+  let treeSha;
+  try {
+    const { data: ref } = await octokit.git.getRef({ owner, repo, ref: 'heads/main' });
+    latestSha = ref.object.sha;
+    const { data: commit } = await octokit.git.getCommit({ owner, repo, commit_sha: latestSha });
+    treeSha = commit.tree.sha;
+  } catch (err) {
+    // Repo might be empty — create an initial empty tree
+    const { data: emptyTree } = await octokit.git.createTree({ owner, repo, tree: [] });
+    treeSha = emptyTree.sha;
+    latestSha = null;
+  }
+
+  // Create blobs for each file
+  const treeItems = await Promise.all(
+    files.map(async (file) => {
+      const { data: blob } = await octokit.git.createBlob({
+        owner,
+        repo,
+        content: Buffer.from(file.content).toString('base64'),
+        encoding: 'base64',
+      });
+      return { path: file.path, mode: '100644', type: 'blob', sha: blob.sha };
+    })
+  );
+
+  // Create new tree
+  const { data: newTree } = await octokit.git.createTree({
+    owner,
+    repo,
+    base_tree: treeSha,
+    tree: treeItems,
+  });
+
+  // Create commit
+  const parents = latestSha ? [latestSha] : [];
+  const { data: newCommit } = await octokit.git.createCommit({
+    owner,
+    repo,
+    message: commitMessage,
+    tree: newTree.sha,
+    parents,
+  });
+
+  // Update main branch ref
+  try {
+    await octokit.git.updateRef({
+      owner,
+      repo,
+      ref: 'heads/main',
+      sha: newCommit.sha,
+      force: false,
+    });
+  } catch {
+    // Branch didn't exist yet — create it
+    await octokit.git.createRef({
+      owner,
+      repo,
+      ref: 'refs/heads/main',
+      sha: newCommit.sha,
+    });
+  }
+
+  return `https://github.com/${owner}/${repo}`;
+}
+
+/**
+ * Enable GitHub Pages on the main branch for the repo.
+ */
+async function enablePages(accessToken, owner, repo) {
+  const octokit = getOctokit(accessToken);
+  try {
+    await octokit.repos.createPagesSite({
+      owner,
+      repo,
+      source: { branch: 'main', path: '/' },
+    });
+  } catch (err) {
+    if (err.status !== 422) throw err; // 422 = pages already enabled
+  }
+  return `https://${owner}.github.io/${repo}`;
+}
+
+module.exports = { listRepos, getUser, pushFiles, enablePages };
