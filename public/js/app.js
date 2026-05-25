@@ -1,9 +1,9 @@
 /* ── AppBuilder chat interface ──────────────────────────────────── */
 
-let messages = [];           // full conversation history sent to the API
 let selectedRepo = null;     // { fullName, owner, name }
 let allRepos = [];           // cached repo list
 let isStreaming = false;
+let isNewConversation = true; // tells the server to start a fresh AG session
 const pendingFiles = new Map(); // fileId → files array (avoids putting file content in onclick attrs)
 let fileIdCounter = 0;
 
@@ -102,6 +102,37 @@ function selectRepo(repo) {
   }
 }
 
+// ── New conversation ─────────────────────────────────────────────
+function startNewConversation() {
+  // Reset AG session flag so the next message gets a fresh session_id on the server
+  isNewConversation = true;
+
+  // Clear the chat UI
+  const container = document.getElementById('chatMessages');
+  container.innerHTML = '';
+
+  // Re-inject welcome screen
+  container.innerHTML = `
+    <div class="welcome-screen" id="welcomeScreen">
+      <div class="welcome-icon">⚡</div>
+      <h2 class="welcome-title">What do you want to build?</h2>
+      <p class="welcome-sub">
+        Describe any app or website in plain English. AppBuilder will ask you a few questions,
+        then create your complete, live website — completely free.
+      </p>
+      <div class="welcome-repo-warning" id="repoWarning" style="display:none;">
+        <span>⚠️</span>
+        <span>Please select a GitHub repository in the sidebar first.</span>
+      </div>
+    </div>`;
+
+  document.getElementById('chatInput').placeholder =
+    'Describe the app you want to build…';
+
+  closeSidebar();
+  setStatus('Ready', false);
+}
+
 // ── Sidebar (mobile) ─────────────────────────────────────────────
 function openSidebar() {
   document.getElementById('sidebar').classList.add('open');
@@ -141,31 +172,34 @@ async function sendMessage() {
   // Clear welcome screen on first message
   hideWelcome();
 
-  // Add user message
-  messages.push({ role: 'user', content: text });
+  // Show user message
   appendMessage('user', text);
   input.value = '';
   autoResize(input);
 
-  // Disable send
+  // Disable input while streaming
   setStreaming(true);
 
-  // Placeholder AI bubble
-  const aiMsgId = appendMessage('ai', null); // null = show typing indicator
+  // Placeholder AI bubble with typing indicator
+  const aiMsgId = appendMessage('ai', null);
 
   try {
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        messages,
+        message: text,
         repoFullName: selectedRepo.fullName,
+        newConversation: isNewConversation,
       }),
     });
 
+    // After the first message, all subsequent ones continue the same AG session
+    isNewConversation = false;
+
     if (!res.ok) throw new Error('Server error');
 
-    const reader = res.body.getReader();
+    const reader  = res.body.getReader();
     const decoder = new TextDecoder();
     let aiText = '';
     let buffer = '';
@@ -175,7 +209,7 @@ async function sendMessage() {
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      buffer = lines.pop(); // keep incomplete line
+      buffer = lines.pop();
 
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
@@ -189,7 +223,6 @@ async function sendMessage() {
           } else if (event.type === 'done') {
             aiText = event.text;
             updateAIBubble(aiMsgId, aiText);
-            messages.push({ role: 'assistant', content: aiText });
             checkForCode(aiText);
           } else if (event.type === 'error') {
             updateAIBubble(aiMsgId, `⚠️ ${event.message}`);
