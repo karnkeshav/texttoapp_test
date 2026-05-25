@@ -3,9 +3,10 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 
-const authRoutes = require('./routes/auth');
-const chatRoutes = require('./routes/chat');
-const githubRoutes = require('./routes/github');
+const authRoutes       = require('./routes/auth');
+const googleAuthRoutes = require('./routes/googleAuth');
+const chatRoutes       = require('./routes/chat');
+const githubRoutes     = require('./routes/github');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -32,6 +33,7 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 
 // ── API / Auth Routes ─────────────────────────────────────────────
 app.use('/auth', authRoutes);
+app.use('/auth', googleAuthRoutes);
 app.use('/api', chatRoutes);
 app.use('/api/github', githubRoutes);
 

@@ -11,6 +11,7 @@ let fileIdCounter = 0;
 window.addEventListener('DOMContentLoaded', async () => {
   await loadUser();
   await loadRepos();
+  await checkGoogleStatus();
   autoResize(document.getElementById('chatInput'));
 });
 
@@ -95,11 +96,21 @@ function selectRepo(repo) {
   // If first message hasn't been sent yet, just update welcome screen
   renderRepoList(allRepos);
 
-  // Add repo context as a system note in first message if conversation is empty
-  if (messages.length === 0) {
+  // Update placeholder to show the selected repo name
+  if (isNewConversation) {
     document.getElementById('chatInput').placeholder =
       `Describe the app you want to build for "${repo.name}"…`;
   }
+}
+
+// ── Google connection status ─────────────────────────────────────
+async function checkGoogleStatus() {
+  try {
+    const res  = await fetch('/auth/google/status');
+    const data = await res.json();
+    document.getElementById('googleConnected').style.display    = data.connected ? 'flex' : 'none';
+    document.getElementById('googleDisconnected').style.display = data.connected ? 'none' : 'flex';
+  } catch (_) {}
 }
 
 // ── New conversation ─────────────────────────────────────────────
@@ -197,6 +208,13 @@ async function sendMessage() {
     // After the first message, all subsequent ones continue the same AG session
     isNewConversation = false;
 
+    if (res.status === 403) {
+      const body = await res.json();
+      if (body.error === 'google_not_connected') {
+        updateAIBubble(aiMsgId, '⚠️ Please connect your Google account in the sidebar first, then try again.');
+        setStreaming(false); setStatus('Ready', false); scrollToBottom(); openSidebar(); return;
+      }
+    }
     if (!res.ok) throw new Error('Server error');
 
     const reader  = res.body.getReader();
