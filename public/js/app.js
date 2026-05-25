@@ -95,8 +95,8 @@ function selectRepo(repo) {
   // If first message hasn't been sent yet, just update welcome screen
   renderRepoList(allRepos);
 
-  // Add repo context as a system note in first message if conversation is empty
-  if (messages.length === 0) {
+  // Update placeholder to show the selected repo name
+  if (isNewConversation) {
     document.getElementById('chatInput').placeholder =
       `Describe the app you want to build for "${repo.name}"…`;
   }

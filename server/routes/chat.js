@@ -1,13 +1,10 @@
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
 const antigravity = require('../services/antigravity');
 
 const router = express.Router();
 
 function requireAuth(req, res, next) {
-  if (!req.session.githubToken) {
-    return res.status(401).json({ error: 'Not authenticated' });
-  }
+  if (!req.session.githubToken) return res.status(401).json({ error: 'Not authenticated' });
   next();
 }
 
@@ -16,8 +13,8 @@ function requireAuth(req, res, next) {
  * Body: { message: string, repoFullName?: string, newConversation?: boolean }
  * Streams Server-Sent Events back to the client.
  *
- * Conversation continuity is handled by Antigravity's session_id persistence —
- * we store one session ID per browser session (reset on "new conversation").
+ * Conversation history is stored in req.session.chatHistory so it can be
+ * embedded in every Antigravity request (the API has no server-side session support).
  */
 router.post('/chat', requireAuth, async (req, res) => {
   const { message, repoFullName, newConversation } = req.body;
@@ -26,14 +23,14 @@ router.post('/chat', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  // Store the selected repo in the session for context
   if (repoFullName) req.session.selectedRepo = repoFullName;
 
-  // Manage Antigravity session ID — one per conversation
-  if (newConversation || !req.session.agSessionId) {
-    req.session.agSessionId = `appbuilder-${req.session.user?.login || 'user'}-${uuidv4()}`;
+  // Reset history when user starts a new conversation
+  if (newConversation || !req.session.chatHistory) {
+    req.session.chatHistory = [];
   }
-  const sessionId = req.session.agSessionId;
+
+  const history = req.session.chatHistory;
 
   // ── SSE setup ─────────────────────────────────────────────────
   res.setHeader('Content-Type', 'text/event-stream');
@@ -45,17 +42,24 @@ router.post('/chat', requireAuth, async (req, res) => {
     res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
 
   const onChunk = (text) => sendEvent('chunk', { text });
-  const onDone  = (text) => {
-    sendEvent('done', { text });
+  const onDone  = (fullText) => {
+    // Persist both sides of the exchange in the session
+    req.session.chatHistory.push({ role: 'user',      content: message.trim() });
+    req.session.chatHistory.push({ role: 'assistant', content: fullText });
+    sendEvent('done', { text: fullText });
     res.end();
   };
 
   // ── Call Antigravity ──────────────────────────────────────────
   try {
     sendEvent('status', { message: 'AppBuilder is thinking…' });
-    await antigravity.streamChat(message.trim(), sessionId, onChunk, onDone);
+    await antigravity.streamChat(message.trim(), history, onChunk, onDone);
   } catch (err) {
-    console.error('Antigravity error:', err.message);
+    console.error('─── Antigravity error ───');
+    console.error('Message :', err.message);
+    console.error('Status  :', err.response?.status);
+    console.error('Body    :', JSON.stringify(err.response?.data, null, 2));
+    console.error('─────────────────────────');
     sendEvent('error', { message: 'AppBuilder ran into an issue. Please try again.' });
     res.end();
   }

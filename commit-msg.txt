@@ -1,0 +1,13 @@
+fix: correct Antigravity API format and messages ReferenceError
+
+- antigravity.js: remove config/context/persistence — all rejected by
+  the real API. Accepted fields are: agent, input, environment:{type},
+  stream. System prompt and conversation history now embedded in input.
+- chat.js: manage conversation history in req.session.chatHistory and
+  pass it to streamChat; remove uuid dependency
+- app.js: fix ReferenceError — replace stale messages.length check
+  with isNewConversation flag (messages array was removed in refactor)
+- package.json: remove uuid (no longer needed)
+
+Note: API returns 429 quota error on all requests — account billing
+issue, not a code problem.
