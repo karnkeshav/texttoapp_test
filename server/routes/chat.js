@@ -15,11 +15,6 @@ router.post('/chat', requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  // Must have connected Google account for Antigravity
-  if (!req.session.googleTokens) {
-    return res.status(403).json({ error: 'google_not_connected' });
-  }
-
   if (repoFullName) req.session.selectedRepo = repoFullName;
 
   if (newConversation || !req.session.chatHistory) {

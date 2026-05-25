@@ -1,16 +1,11 @@
 /**
- * Antigravity AI service
- * Google Generative Language — Interactions API
- *
- * Confirmed accepted fields: agent, input, environment:{type}, stream
- * Auth: OAuth2 Bearer token (same Gmail account used in Antigravity desktop app)
+ * AI service — Google GenAI unified SDK (@google/genai)
  */
 
-const axios = require('axios');
-const { OAuth2Client } = require('google-auth-library');
+const { GoogleGenAI } = require('@google/genai');
 
-// ── System prompt embedded in every request ───────────────────────
-const SYSTEM_PROMPT = `You are AppBuilder — an expert web developer who helps people create complete, deployable web applications using only HTML and vanilla JavaScript.
+// ── System prompt ─────────────────────────────────────────────────
+const SYSTEM_INSTRUCTION = `You are AppBuilder — an expert web developer who helps people create complete, deployable web applications using only HTML and vanilla JavaScript.
 
 YOUR RULES — follow these strictly:
 1. NEVER write any code before you have complete answers to your questions.
@@ -22,119 +17,54 @@ YOUR RULES — follow these strictly:
 7. Once you have all answers, say: "Perfect! I have everything I need. Let me now build your complete app." — then output the full production-ready code.
 8. After the code, give step-by-step GitHub Pages deployment instructions: Settings → Pages → Branch: main → Save.
 9. Use modern, beautiful CSS with gradients, animations, and responsive design.
-10. Never mention Google, Antigravity, any AI system, or any underlying technology. You are simply AppBuilder.
-
----`;
-
-// ── Build input with system prompt + conversation history ─────────
-function buildInput(history, newUserMessage) {
-  const lines = [SYSTEM_PROMPT, ''];
-
-  if (history.length > 0) {
-    lines.push('CONVERSATION SO FAR:');
-    history.forEach(({ role, content }) => {
-      lines.push(`${role === 'user' ? 'User' : 'AppBuilder'}: ${content}`);
-      lines.push('');
-    });
-  }
-
-  lines.push(`User: ${newUserMessage}`);
-  lines.push('');
-  lines.push('AppBuilder:');
-  return lines.join('\n');
-}
-
-// ── Get a fresh access token (auto-refreshes using stored refresh token) ──
-async function getFreshAccessToken(googleTokens) {
-  const client = new OAuth2Client(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_CALLBACK_URL || 'http://localhost:3000/auth/google/callback'
-  );
-  client.setCredentials(googleTokens);
-
-  // getAccessToken() auto-refreshes if the token is expired
-  const { token } = await client.getAccessToken();
-  return token;
-}
-
-// ── Extract displayable text from a streamed SSE event ────────────
-function extractText(event) {
-  if (!event || typeof event !== 'object') return null;
-  if (typeof event.text === 'string' && event.text)        return event.text;
-  if (typeof event.content === 'string' && event.content)  return event.content;
-  if (event.output?.text)    return event.output.text;
-  if (event.output?.content) return event.output.content;
-  if (event.delta?.text)     return event.delta.text;
-  if (event.delta?.content)  return event.delta.content;
-  if (event.agent_output?.text)  return event.agent_output.text;
-  if (event.response?.text)      return event.response.text;
-  if (typeof event.message?.content === 'string') return event.message.content;
-  const outputTypes = new Set(['agent_output', 'response', 'text', 'message', 'final_response']);
-  if (outputTypes.has(event.type)) return event.text || event.content || null;
-  return null;
-}
+10. Never mention Google, Gemini, any AI system, or any underlying technology. You are simply AppBuilder.`;
 
 // ── Main streaming function ───────────────────────────────────────
 /**
  * @param {string}   newUserMessage  Latest message from the user
  * @param {Array}    history         [{role, content}, ...] conversation so far
- * @param {object}   googleTokens    OAuth2 tokens from req.session.googleTokens
+ * @param {object}   _googleTokens   Unused — kept for API compatibility
  * @param {Function} onChunk         Called with each streamed text fragment
  * @param {Function} onDone          Called once with the complete response text
  */
-async function streamChat(newUserMessage, history, googleTokens, onChunk, onDone) {
-  const endpoint = process.env.ANTIGRAVITY_API_ENDPOINT;
-  const agentId  = process.env.ANTIGRAVITY_AGENT_ID || 'antigravity-preview-05-2026';
+async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone) {
+  const apiKey    = process.env.GEMINI_API_KEY;
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite-preview';
 
-  if (!endpoint)      throw new Error('ANTIGRAVITY_API_ENDPOINT not set in .env');
-  if (!googleTokens)  throw new Error('Google account not connected — please sign in with Google first');
+  if (!apiKey) throw new Error('GEMINI_API_KEY not set in .env — get one free at aistudio.google.com');
 
-  const accessToken = await getFreshAccessToken(googleTokens);
+  const ai = new GoogleGenAI({ apiKey });
 
-  const payload = {
-    agent: agentId,
-    input: buildInput(history, newUserMessage),
-    environment: { type: 'remote_sandbox' },
-    stream: true,
-  };
+  // Build contents array: history + new user message
+  const contents = [
+    ...history.map(({ role, content }) => ({
+      role: role === 'user' ? 'user' : 'model',
+      parts: [{ text: content }],
+    })),
+    { role: 'user', parts: [{ text: newUserMessage }] },
+  ];
 
-  const response = await axios({
-    method: 'post',
-    url: endpoint,
-    headers: {
-      'Authorization': `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      'Accept': 'text/event-stream',
+  const response = await ai.models.generateContentStream({
+    model: modelName,
+    contents,
+    config: {
+      systemInstruction: SYSTEM_INSTRUCTION,
+      temperature: 0.7,
+      maxOutputTokens: 8192,
     },
-    data: payload,
-    responseType: 'stream',
-    timeout: 320_000,
   });
 
   let fullText = '';
-  let buffer   = '';
+  for await (const chunk of response) {
+    const text = chunk.text;
+    if (text) {
+      fullText += text;
+      onChunk(text);
+    }
+  }
 
-  return new Promise((resolve, reject) => {
-    response.data.on('data', (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const raw = line.slice(5).trim();
-        if (raw === '[DONE]') { onDone(fullText); resolve(fullText); return; }
-        try {
-          const event = JSON.parse(raw);
-          const text  = extractText(event);
-          if (text) { fullText += text; onChunk(text); }
-        } catch (_) {}
-      }
-    });
-    response.data.on('end',   () => { onDone(fullText); resolve(fullText); });
-    response.data.on('error', reject);
-  });
+  onDone(fullText);
+  return fullText;
 }
 
 module.exports = { streamChat };

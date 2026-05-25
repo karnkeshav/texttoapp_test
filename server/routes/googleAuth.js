@@ -22,7 +22,8 @@ router.get('/google', (req, res) => {
     access_type: 'offline',   // gets a refresh token so we never expire
     prompt: 'consent',        // forces refresh token on every login
     scope: [
-      'https://www.googleapis.com/auth/generative-language',
+      'https://www.googleapis.com/auth/cloud-platform',
+      'https://www.googleapis.com/auth/generative-language.peruserquota',
       'email',
       'profile',
     ],

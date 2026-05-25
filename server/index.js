@@ -37,6 +37,52 @@ app.use('/auth', googleAuthRoutes);
 app.use('/api', chatRoutes);
 app.use('/api/github', githubRoutes);
 
+// ── Diagnostic endpoint (dev only) ───────────────────────────────
+app.get('/api/diagnose', async (req, res) => {
+  const { OAuth2Client } = require('google-auth-library');
+  const axios = require('axios');
+
+  const result = {
+    github_logged_in:  !!req.session.githubToken,
+    google_connected:  !!req.session.googleTokens,
+    google_token_keys: req.session.googleTokens ? Object.keys(req.session.googleTokens) : [],
+    granted_scope: req.session.googleTokens?.scope || null,
+    antigravity_endpoint: process.env.ANTIGRAVITY_API_ENDPOINT,
+    agent_id: process.env.ANTIGRAVITY_AGENT_ID,
+    access_token_test: null,
+    api_test: null,
+  };
+
+  if (req.session.googleTokens) {
+    try {
+      const client = new OAuth2Client(
+        process.env.GOOGLE_CLIENT_ID,
+        process.env.GOOGLE_CLIENT_SECRET,
+        process.env.GOOGLE_CALLBACK_URL
+      );
+      client.setCredentials(req.session.googleTokens);
+      const { token } = await client.getAccessToken();
+      result.access_token_test = token ? `OK (starts: ${token.slice(0,10)}...)` : 'NULL';
+
+      // Test the actual Antigravity API
+      try {
+        const r = await axios.post(
+          process.env.ANTIGRAVITY_API_ENDPOINT,
+          { agent: process.env.ANTIGRAVITY_AGENT_ID, input: 'Say hi.', environment: { type: 'remote_sandbox' }, stream: false },
+          { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' }, timeout: 20000 }
+        );
+        result.api_test = { status: r.status, data: JSON.stringify(r.data).slice(0, 300) };
+      } catch (apiErr) {
+        result.api_test = { status: apiErr.response?.status, error: apiErr.response?.data || apiErr.message };
+      }
+    } catch (tokenErr) {
+      result.access_token_test = `ERROR: ${tokenErr.message}`;
+    }
+  }
+
+  res.json(result);
+});
+
 // ── Page routes ───────────────────────────────────────────────────
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
