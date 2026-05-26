@@ -118,7 +118,7 @@ router.post('/push', requireAuth, async (req, res) => {
   try {
     const processed = processFiles(files, process.env.BACKEND_ORIGIN);
     const repoUrl   = await pushFiles(req.session.githubToken, owner, repo, processed, 'Update app via AppBuilder', branch);
-    const pagesUrl  = await enablePages(req.session.githubToken, owner, repo);
+    const pagesUrl  = await enablePages(req.session.githubToken, owner, repo, branch);
     res.json({ success: true, repoUrl, pagesUrl });
   } catch (err) {
     console.error('Push error:', err.message);

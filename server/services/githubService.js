@@ -131,18 +131,25 @@ async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add a
 }
 
 /**
- * Enable GitHub Pages on the main branch for the repo.
+ * Enable GitHub Pages on the repo's target branch.
+ * Silently accepts "already enabled" responses — Octokit v21 can put the HTTP
+ * status on either err.status or err.response?.status depending on the error
+ * type, so we check both.  GitHub also occasionally returns 409 instead of
+ * 422 for this condition, so we accept both.
  */
-async function enablePages(accessToken, owner, repo) {
+async function enablePages(accessToken, owner, repo, branch = 'main') {
   const octokit = getOctokit(accessToken);
   try {
     await octokit.repos.createPagesSite({
       owner,
       repo,
-      source: { branch: 'main', path: '/' },
+      source: { branch, path: '/' },
     });
   } catch (err) {
-    if (err.status !== 422) throw err; // 422 = pages already enabled
+    const status = err.status ?? err.response?.status;
+    // 422 = validation failed (pages already enabled)
+    // 409 = conflict (pages already enabled on some API versions)
+    if (status !== 422 && status !== 409) throw err;
   }
   return `https://${owner}.github.io/${repo}`;
 }

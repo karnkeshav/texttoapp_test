@@ -68,16 +68,23 @@ const FRAMEWORK_RE = /\b(react|vue|angular|next\.?js|nuxt\.?js|svelte|gatsby|rem
 function isConversationalIntent(message) {
   const m = message.toLowerCase().trim();
 
-  // Explicit build/change intent → always treat as edit
-  if (/\b(add|build|create|make|implement|generate|change|modify|update|fix|improve|refactor|redesign|remove|delete|replace|rewrite|style|design|feature|button|form|menu|chart|graph)\b/.test(m)) {
+  // Strip negated build verbs FIRST — "don't build", "dont create", "not now"
+  // so "give me details, dont build now" doesn't falsely trigger build detection.
+  const withoutNegations = m.replace(
+    /\b(don'?t|do not|not|never|without|no)\s+(build|create|make|add|implement|generate|change|modify|update|fix|improve|refactor|redesign|remove|delete|replace|rewrite)\b/g,
+    ''
+  );
+
+  // Explicit build/change intent (after removing negations) → treat as edit
+  if (/\b(add|build|create|make|implement|generate|change|modify|update|fix|improve|refactor|redesign|remove|delete|replace|rewrite|style|design|feature|button|form|menu|chart|graph)\b/.test(withoutNegations)) {
     return false;
   }
 
-  // Question openers or pure information-seeking patterns
+  // Question openers, information-seeking patterns, or explicit "don't build" language
   return (
     /^(what|how|why|when|where|which|who)\b/.test(m) ||
     /\?/.test(m) ||
-    /\b(explain|describe|summarize|overview|purpose|tell me|show me|what does|what is|what are|how does|how do|walk me through|analyze|analyse|understand|review|flow|architecture|structure|codebase|logic|working|works)\b/.test(m)
+    /\b(don'?t build|dont build|not build|first give|give me (the )?details?|tell me (about|more)|just (tell|explain|describe)|show me|walk me through|explain|describe|summarize|overview|purpose|what does|what is|what are|how does|how do|analyze|analyse|understand|review|flow|architecture|structure|codebase|logic|working|works)\b/.test(m)
   );
 }
 
