@@ -10,6 +10,30 @@
 const axios = require('axios');
 const { pooledStream } = require('./geminiPool');
 
+// ── Circuit breaker (module-level — shared across all requests) ───
+// When Antigravity returns 429 the breaker "trips" and all subsequent
+// requests are routed straight to Gemini pool for COOLDOWN_MS milliseconds.
+// After cooldown the next request probes Antigravity again; if it 429s
+// again the breaker re-trips automatically.
+const antigravityBreaker = {
+  cooldownUntil: 0,
+  COOLDOWN_MS: 5 * 60 * 1000, // 5 minutes
+
+  isOpen() {
+    return Date.now() < this.cooldownUntil;
+  },
+
+  trip() {
+    this.cooldownUntil = Date.now() + this.COOLDOWN_MS;
+    const resetAt = new Date(this.cooldownUntil).toLocaleTimeString();
+    console.warn(`[AI] ⚡ Antigravity circuit breaker OPEN — Gemini pool takes over until ${resetAt}`);
+  },
+
+  remainingSeconds() {
+    return Math.max(0, Math.ceil((this.cooldownUntil - Date.now()) / 1000));
+  },
+};
+
 // ── System prompt ─────────────────────────────────────────────────
 const SYSTEM_INSTRUCTION = `You are AppBuilder — an elite frontend engineer who crafts visually stunning, fully functional single-page web apps using only HTML and vanilla JavaScript.
 
@@ -233,10 +257,14 @@ All checks pass → write the code. Any check fails → fix it first.
 ---`;
 
 // ── Build flat input string for Antigravity ───────────────────────
+// Only the last 3 history turns are embedded in the flat input string.
+// The build spec / style choices live in enrichedNotes, not in raw history,
+// so trimming history here doesn't lose any critical build context while
+// keeping the per-request token footprint well inside Antigravity's quota.
 function buildInput(history, newUserMessage, enrichedNotes = '') {
   const lines = [SYSTEM_INSTRUCTION, ''];
 
-  // Inject plan-phase enriched context if available (first-turn only)
+  // Inject plan-phase enriched context if available
   if (enrichedNotes && enrichedNotes !== 'No additional context.') {
     lines.push('── ENRICHED CONTEXT FROM PLAN PHASE ──');
     lines.push(enrichedNotes);
@@ -244,9 +272,11 @@ function buildInput(history, newUserMessage, enrichedNotes = '') {
     lines.push('');
   }
 
-  if (history.length > 0) {
+  // Trim to last 3 turns — reduces TPM without losing spec context
+  const recentHistory = history.slice(-3);
+  if (recentHistory.length > 0) {
     lines.push('CONVERSATION SO FAR:');
-    history.forEach(({ role, content }) => {
+    recentHistory.forEach(({ role, content }) => {
       lines.push(`${role === 'user' ? 'User' : 'AppBuilder'}: ${content}`);
       lines.push('');
     });
@@ -364,17 +394,32 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
 
   if (!apiKey) throw new Error('GEMINI_API_KEY not set in .env');
 
+  // ── Circuit breaker: skip Antigravity while cooling down after a 429 ──
+  if (antigravityBreaker.isOpen()) {
+    console.log(`[AI] Antigravity breaker open (${antigravityBreaker.remainingSeconds()}s left) — routing to Gemini pool`);
+    await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+    console.log('[AI] Gemini pool ✅');
+    return;
+  }
+
   try {
     console.log('[AI] Trying Antigravity…');
     await streamFromAntigravity(newUserMessage, history, apiKey, agentId, onChunk, onDone, enrichedNotes);
     console.log('[AI] Antigravity ✅');
   } catch (err) {
     if (shouldFallback(err)) {
-      console.warn(`[AI] Antigravity ${err.response?.status} — falling back to Gemini pool`);
+      // Trip the breaker specifically on 429 (quota exhausted).
+      // Other HTTP errors (500, 503, 400) fall back once without tripping the breaker
+      // — they're transient and shouldn't lock out Antigravity for 5 minutes.
+      if (err.response?.status === 429) {
+        antigravityBreaker.trip();
+      } else {
+        console.warn(`[AI] Antigravity ${err.response?.status} — one-shot fallback (breaker not tripped)`);
+      }
       await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
       console.log('[AI] Gemini pool ✅');
     } else {
-      console.error('[AI] Antigravity error (no fallback):', err.response?.status, err.message);
+      console.error('[AI] Antigravity network error (no fallback):', err.message);
       throw err;
     }
   }
