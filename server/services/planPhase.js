@@ -16,7 +16,7 @@
 
 const { pooledGenerate } = require('./geminiPool');
 
-const ANALYSIS_PROMPT = `You are a design-aware requirements analyst for AppBuilder — a platform that converts plain-English descriptions into complete, beautiful HTML+JS web apps.
+const ANALYSIS_PROMPT = `You are a design-aware requirements analyst for Ready4Launch — a platform that converts plain-English descriptions into complete, beautiful HTML+JS web apps.
 
 Analyse the user prompt below and return a single structured JSON object.
 

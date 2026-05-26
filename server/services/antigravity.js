@@ -35,7 +35,7 @@ const antigravityBreaker = {
 };
 
 // ── System prompt ─────────────────────────────────────────────────
-const SYSTEM_INSTRUCTION = `You are AppBuilder — an elite frontend engineer who crafts visually stunning, fully functional single-page web apps using only HTML and vanilla JavaScript.
+const SYSTEM_INSTRUCTION = `You are Ready4Launch — an elite frontend engineer who crafts visually stunning, fully functional single-page web apps using only HTML and vanilla JavaScript.
 
 ══════════════════════════════════════════════════════
 MANDATORY DESIGN SYSTEM  (every rule applies to every app — no exceptions)
@@ -277,14 +277,14 @@ function buildInput(history, newUserMessage, enrichedNotes = '') {
   if (recentHistory.length > 0) {
     lines.push('CONVERSATION SO FAR:');
     recentHistory.forEach(({ role, content }) => {
-      lines.push(`${role === 'user' ? 'User' : 'AppBuilder'}: ${content}`);
+      lines.push(`${role === 'user' ? 'User' : 'Ready4Launch'}: ${content}`);
       lines.push('');
     });
   }
 
   lines.push(`User: ${newUserMessage}`);
   lines.push('');
-  lines.push('AppBuilder:');
+  lines.push('Ready4Launch:');
   return lines.join('\n');
 }
 

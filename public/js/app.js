@@ -1,4 +1,4 @@
-/* ── AppBuilder chat interface ──────────────────────────────────── */
+/* ── Ready4Launch chat interface ──────────────────────────────────── */
 
 let isStreaming = false;
 let isNewConversation = true;
@@ -47,7 +47,7 @@ function startNewConversation() {
       <div class="welcome-icon">⚡</div>
       <h2 class="welcome-title">What do you want to build?</h2>
       <p class="welcome-sub">
-        Describe any app or website in plain English. AppBuilder will ask a few quick questions,
+        Describe any app or website in plain English. Ready4Launch will ask a few quick questions,
         then build and deploy your complete website — free.
       </p>
       <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
@@ -139,7 +139,7 @@ function selectRepoForEdit(owner, repo, defaultBranch) {
     <div class="welcome-screen" id="welcomeScreen">
       <div class="welcome-icon">✏️</div>
       <h2 class="welcome-title" style="font-size:clamp(20px,3vw,28px);">Editing: <span style="color:var(--purple-light);">${escapeHtml(repo)}</span></h2>
-      <p class="welcome-sub">Describe the changes you want to make. AppBuilder will fetch the current code, apply your changes, and push a new commit.</p>
+      <p class="welcome-sub">Describe the changes you want to make. Ready4Launch will fetch the current code, apply your changes, and push a new commit.</p>
     </div>`;
 
   // Update topbar
@@ -311,7 +311,7 @@ function appendMessage(role, text) {
     div.innerHTML = `
       <div class="msg-avatar ai">⚡</div>
       <div class="msg-body">
-        <div class="msg-meta">AppBuilder · ${now}</div>
+        <div class="msg-meta">Ready4Launch · ${now}</div>
         <div class="msg-bubble" id="${id}-bubble">
           ${text === null ? '<div class="typing-indicator"><span></span><span></span><span></span></div>' : renderMarkdown(text)}
         </div>
@@ -365,7 +365,7 @@ function checkForCode(text) {
     const truncatedMatch = text.match(/```html\s*([\s\S]*?<\/html>)/i);
     if (truncatedMatch) {
       htmlContent = truncatedMatch[1].trim();
-      console.warn('[AppBuilder] HTML block had no closing ``` — used </html> as boundary');
+      console.warn('[Ready4Launch] HTML block had no closing ``` — used </html> as boundary');
     }
   }
 
@@ -375,7 +375,7 @@ function checkForCode(text) {
   const repoMatch = text.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
   const repoName  = repoMatch
     ? repoMatch[1].toLowerCase()
-    : `appbuilder-${Date.now().toString(36)}`;
+    : `r4l-${Date.now().toString(36)}`;
 
   const files = [{ path: 'index.html', content: htmlContent }];
 
@@ -411,7 +411,7 @@ function showPushUpdatePrompt(fullText, owner, repo, branch) {
     <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:14px;padding:24px;">
       <div style="font-size:16px;font-weight:700;margin-bottom:8px;">✅ Changes ready to push!</div>
       <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-        AppBuilder has applied your changes to
+        Ready4Launch has applied your changes to
         <strong style="color:#4ade80;">${escapeHtml(owner)}/${escapeHtml(repo)}</strong>.
         Push a new commit to update your live site.
       </p>
@@ -499,7 +499,7 @@ function showDeployPrompt(repoName, files) {
     <div style="background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.25);border-radius:14px;padding:24px;">
       <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready to deploy!</div>
       <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-        AppBuilder will create a new public GitHub repository called
+        Ready4Launch will create a new public GitHub repository called
         <strong style="color:var(--purple-light);">${repoName}</strong>,
         push your code, and enable GitHub Pages — automatically.
       </p>
@@ -527,7 +527,7 @@ async function deployToGitHub(fileId, btn) {
     const res  = await fetch('/api/github/deploy', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoName, files, description: `Built with AppBuilder` }),
+      body: JSON.stringify({ repoName, files, description: `Built with Ready4Launch` }),
     });
     const data = await res.json();
     const card = btn.closest('div[style]');

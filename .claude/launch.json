@@ -2,7 +2,7 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "AppBuilder",
+      "name": "Ready4Launch",
       "runtimeExecutable": "node",
       "runtimeArgs": ["server/index.js"],
       "port": 3000

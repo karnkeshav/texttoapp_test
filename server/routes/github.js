@@ -44,11 +44,11 @@ function pinCDNVersions(html) {
 
 // ── Runtime telemetry injection ───────────────────────────────────
 // Injects a silent window.onerror handler into every deployed HTML file.
-// Errors are posted to /api/telemetry/report on the AppBuilder backend.
+// Errors are posted to /api/telemetry/report on the Ready4Launch backend.
 function injectTelemetry(html, backendOrigin) {
   const origin = backendOrigin || 'https://your-texttoapp-backend.onrender.com';
   const snippet = `
-  <!-- AppBuilder runtime monitor -->
+  <!-- Ready4Launch runtime monitor -->
   <script>
     window.onerror = function(msg, src, line, col, err) {
       try {
@@ -117,7 +117,7 @@ router.post('/push', requireAuth, async (req, res) => {
 
   try {
     const processed = processFiles(files, process.env.BACKEND_ORIGIN);
-    const repoUrl   = await pushFiles(req.session.githubToken, owner, repo, processed, 'Update app via AppBuilder', branch);
+    const repoUrl   = await pushFiles(req.session.githubToken, owner, repo, processed, 'Update app via Ready4Launch', branch);
     const pagesUrl  = await enablePages(req.session.githubToken, owner, repo, branch);
     res.json({ success: true, repoUrl, pagesUrl });
   } catch (err) {
@@ -175,7 +175,7 @@ router.post('/deploy', requireAuth, async (req, res) => {
     // 4. Atomic push — all files in one commit (prevents partial deploy state)
     const repoUrl = await pushFiles(
       req.session.githubToken, owner, name, processed,
-      'Initial app — built with AppBuilder'
+      'Initial app — built with Ready4Launch'
     );
 
     // 5. Enable GitHub Pages

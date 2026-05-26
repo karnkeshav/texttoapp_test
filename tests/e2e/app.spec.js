@@ -339,7 +339,7 @@ test.describe('Error handling', () => {
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
         body: sseBody([
-          { type: 'error', message: 'AppBuilder ran into an issue. Please try again.' },
+          { type: 'error', message: 'Ready4Launch ran into an issue. Please try again.' },
         ]),
       });
     });

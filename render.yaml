@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: appbuilder
+    name: ready4launch
     runtime: node
     plan: free
     buildCommand: npm install

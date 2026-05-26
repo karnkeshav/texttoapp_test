@@ -106,7 +106,7 @@ function extractCodeFromResponse(text) {
 
   // REPO_NAME extraction
   const repoMatch = text.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
-  const repoName = repoMatch ? repoMatch[1].toLowerCase() : 'appbuilder-fallback';
+  const repoName = repoMatch ? repoMatch[1].toLowerCase() : 'r4l-fallback';
 
   const files = [{ path: 'index.html', content: htmlContent }];
 
@@ -339,7 +339,7 @@ describe('extractCodeFromResponse — checkForCode logic', () => {
     const text = `No repo name here.\n\n\`\`\`html\n${MINIMAL_HTML}\n\`\`\``;
     const result = extractCodeFromResponse(text);
     expect(result).not.toBeNull();
-    expect(result.repoName).toBe('appbuilder-fallback');
+    expect(result.repoName).toBe('r4l-fallback');
   });
 
   test('REPO_NAME: lowercase converts uppercase letters', () => {
@@ -360,15 +360,15 @@ describe('extractCodeFromResponse — checkForCode logic', () => {
     const text = `REPO_NAME: ab\n\`\`\`html\n${MINIMAL_HTML}\n\`\`\``;
     const result = extractCodeFromResponse(text);
     // 'ab' is 2 chars — does NOT satisfy {1,48} middle group minimum
-    // Expected: falls back to 'appbuilder-fallback'
-    expect(result.repoName).toBe('appbuilder-fallback');
+    // Expected: falls back to 'r4l-fallback'
+    expect(result.repoName).toBe('r4l-fallback');
   });
 
   test('[BUG?] REPO_NAME starting with hyphen does not match', () => {
     const text = `REPO_NAME: -invalid\n\`\`\`html\n${MINIMAL_HTML}\n\`\`\``;
     const result = extractCodeFromResponse(text);
     // Pattern starts with [a-z0-9], so '-invalid' fails → fallback
-    expect(result.repoName).toBe('appbuilder-fallback');
+    expect(result.repoName).toBe('r4l-fallback');
   });
 
   test('REPO_NAME ending with hyphen: trailing hyphen is silently stripped', () => {

@@ -65,7 +65,7 @@ async function testPoolGenerate() {
 // ── Test 3: Pool stream — full code generation ────────────────────
 async function testPoolStream() {
   console.log('\n── Test 3: Pool stream (code generation) ───────────');
-  const SYSTEM = 'You are AppBuilder. Always output REPO_NAME: <name> then a ```html block with complete HTML.';
+  const SYSTEM = 'You are Ready4Launch. Always output REPO_NAME: <name> then a ```html block with complete HTML.';
 
   // Minimal generation prompt
   const contents = [
@@ -193,7 +193,7 @@ async function testServerHealth() {
 // ── Main ──────────────────────────────────────────────────────────
 (async () => {
   console.log('═'.repeat(55));
-  console.log('  AppBuilder Smoke Test');
+  console.log('  Ready4Launch Smoke Test');
   console.log('═'.repeat(55));
 
   await testServerHealth();

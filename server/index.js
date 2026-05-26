@@ -120,5 +120,5 @@ app.get('/app', (req, res) => {
 
 // ── Start ─────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n🚀 AppBuilder running at http://localhost:${PORT}\n`);
+  console.log(`\n🚀 Ready4Launch running at http://localhost:${PORT}\n`);
 });

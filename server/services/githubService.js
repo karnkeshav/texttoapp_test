@@ -32,7 +32,7 @@ async function getUser(accessToken) {
  * Create a new public repository for the authenticated user.
  * If the name is taken, appends a numeric suffix until it finds a free name.
  */
-async function createRepo(accessToken, name, description = 'Created with AppBuilder') {
+async function createRepo(accessToken, name, description = 'Created with Ready4Launch') {
   const octokit = getOctokit(accessToken);
   let repoName = name;
   let attempt  = 0;
@@ -63,7 +63,7 @@ async function createRepo(accessToken, name, description = 'Created with AppBuil
  * Pass the repo's defaultBranch so edits go to the right branch.
  * files: [{ path: 'index.html', content: '...' }, ...]
  */
-async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add app files via AppBuilder', branch = 'main') {
+async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add app files via Ready4Launch', branch = 'main') {
   const octokit = getOctokit(accessToken);
 
   // Get the current HEAD commit SHA

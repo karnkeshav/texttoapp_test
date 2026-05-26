@@ -12,7 +12,7 @@ test.describe('Landing page', () => {
 
   test('has correct title', async ({ page }) => {
     await page.goto('/');
-    await expect(page).toHaveTitle(/AppBuilder/i);
+    await expect(page).toHaveTitle(/Ready4Launch/i);
   });
 
   test('shows a "Sign in with GitHub" button', async ({ page }) => {

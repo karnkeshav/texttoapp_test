@@ -436,13 +436,13 @@ router.post('/chat', requireAuth, async (req, res) => {
       const hasHtmlBlock  = /```html/i.test(fullText);
       if (announcedCode && !hasHtmlBlock) {
         console.warn('[Chat] Output gate: REPO_NAME without ```html — rejecting');
-        outputGateError = 'AppBuilder generated an incomplete response. Please try again.';
+        outputGateError = 'Ready4Launch generated an incomplete response. Please try again.';
         return;
       }
       capturedText = fullText;
     };
 
-    sendEvent('status', { message: 'AppBuilder is building your app…' });
+    sendEvent('status', { message: 'Ready4Launch is building your app…' });
     await antigravity.streamChat(
       processedMessage,
       historyToSend,
@@ -495,7 +495,7 @@ router.post('/chat', requireAuth, async (req, res) => {
     console.error('Status :', err.response?.status);
     console.error('─────────────────');
     if (!res.writableEnded) {
-      sendEvent('error', { message: 'AppBuilder ran into an issue. Please try again.' });
+      sendEvent('error', { message: 'Ready4Launch ran into an issue. Please try again.' });
       res.end();
     }
   }
