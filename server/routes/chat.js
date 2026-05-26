@@ -179,11 +179,16 @@ router.post('/chat', requireAuth, async (req, res) => {
     editOwner,
     editRepo,
     editBranch = 'main',
+    attachment,   // optional: { fileName, mimeType, data (base64) }
   } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
     return res.status(400).json({ error: 'message is required' });
   }
+
+  // Validate attachment if present
+  const hasAttachment = attachment && attachment.mimeType && attachment.data;
+  const isImageAttachment = hasAttachment && attachment.mimeType.startsWith('image/');
 
   // Reset full session on new conversation
   if (newConversation || !req.session.chatHistory) {
@@ -218,6 +223,51 @@ router.post('/chat', requireAuth, async (req, res) => {
   const trimmedMessage = message.trim();
 
   try {
+    // ════════════════════════════════════════════════════════════
+    // ATTACHMENT ROUTING — handle image / document attachments before the
+    // intent classifier so the AI always sees the file content.
+    // Images → Gemini vision (inlineData). Other files → text extraction stub.
+    // ════════════════════════════════════════════════════════════
+    if (hasAttachment) {
+      req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+
+      // Build the multimodal parts array for Gemini
+      const parts = [];
+      if (isImageAttachment) {
+        parts.push({ inlineData: { mimeType: attachment.mimeType, data: attachment.data } });
+      } else {
+        // Non-image document: tell the model a file was attached and ask it to work from the text prompt
+        parts.push({ text: `[The user attached a file: "${attachment.fileName}" (${attachment.mimeType})]` });
+      }
+      if (trimmedMessage && trimmedMessage !== '(see attached file)') {
+        parts.push({ text: trimmedMessage });
+      }
+
+      const SYS_VISION = `You are Ready4Launch — a smart AI assistant that can analyse images, answer questions about documents, and build web apps.
+When shown an image: describe it clearly, identify key elements, answer any user question about it.
+When shown a document reference: acknowledge it and help with whatever the user asks.
+Be helpful and concise. Do NOT output REPO_NAME or HTML code blocks unless the user explicitly asks to build an app.`;
+
+      sendEvent('status', { message: isImageAttachment ? 'Analysing image…' : 'Processing file…' });
+
+      req.session.chatPhase = 'chat';  // keep in chat mode for follow-ups
+
+      let responseText = '';
+      await pooledStream({
+        contents:          [{ role: 'user', parts }],
+        config:            { temperature: 0.5, maxOutputTokens: 8192 },
+        apiKey,
+        systemInstruction: SYS_VISION,
+        multimodal:        isImageAttachment,  // new-SDK-only slots for inlineData
+        onChunk: (t) => sendEvent('chunk', { text: t }),
+        onDone:  (t) => { responseText = t; },
+      });
+
+      req.session.chatHistory.push({ role: 'assistant', content: responseText });
+      sendEvent('done', { text: responseText });
+      return res.end();
+    }
+
     // ════════════════════════════════════════════════════════════
     // TOP-LEVEL INTENT ROUTING (first message of a NEW conversation only)
     // Intercepts non-build intents before the build state machine starts.

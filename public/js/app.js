@@ -8,6 +8,78 @@ let fileIdCounter = 0;
 // ── Edit mode state ───────────────────────────────────────────────
 let editModeActive = null; // null | { owner, repo }
 
+// ── Attachment state ──────────────────────────────────────────────
+// pendingAttachment: null | { fileName, mimeType, data (base64), sizeLabel, isImage }
+let pendingAttachment = null;
+
+function openAttachPicker() {
+  document.getElementById('attachInput').click();
+}
+
+function handleAttachmentSelected(input) {
+  const file = input.files[0];
+  if (!file) return;
+
+  // 10 MB cap
+  if (file.size > 10 * 1024 * 1024) {
+    alert('File too large — maximum 10 MB.');
+    input.value = '';
+    return;
+  }
+
+  const isImage = file.type.startsWith('image/');
+  const sizeLabel = file.size < 1024
+    ? `${file.size} B`
+    : file.size < 1024 * 1024
+    ? `${(file.size / 1024).toFixed(1)} KB`
+    : `${(file.size / (1024 * 1024)).toFixed(1)} MB`;
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    // Strip the data-URI prefix to get raw base64
+    const dataUrl = e.target.result;
+    const base64  = dataUrl.split(',')[1];
+
+    pendingAttachment = { fileName: file.name, mimeType: file.type, data: base64, sizeLabel, isImage, dataUrl };
+    renderAttachPreview();
+    document.getElementById('attachBtn').classList.add('has-file');
+  };
+  reader.readAsDataURL(file);
+
+  // Reset so the same file can be re-selected if removed and re-added
+  input.value = '';
+}
+
+function renderAttachPreview() {
+  if (!pendingAttachment) return;
+  const strip = document.getElementById('attachPreviewStrip');
+  const inner = document.getElementById('attachPreviewInner');
+
+  const { fileName, sizeLabel, isImage, dataUrl } = pendingAttachment;
+
+  const thumb = isImage
+    ? `<img src="${dataUrl}" alt="${escapeHtml(fileName)}" />`
+    : `<div class="attach-chip-icon">📄</div>`;
+
+  inner.innerHTML = `
+    <div class="attach-chip">
+      ${thumb}
+      <span class="attach-chip-name" title="${escapeHtml(fileName)}">${escapeHtml(fileName)}</span>
+      <span class="attach-chip-size">${sizeLabel}</span>
+      <button class="attach-chip-remove" onclick="clearAttachment()" title="Remove">✕</button>
+    </div>`;
+
+  strip.style.display = 'block';
+}
+
+function clearAttachment() {
+  pendingAttachment = null;
+  const strip = document.getElementById('attachPreviewStrip');
+  strip.style.display = 'none';
+  document.getElementById('attachPreviewInner').innerHTML = '';
+  document.getElementById('attachBtn').classList.remove('has-file');
+}
+
 // ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   await loadUser();
@@ -188,15 +260,20 @@ function handleInputKeydown(e) {
 async function sendMessage() {
   const input = document.getElementById('chatInput');
   const text = input.value.trim();
-  if (!text || isStreaming) return;
+  // Allow send if there's text OR an attachment (or both)
+  if ((!text && !pendingAttachment) || isStreaming) return;
 
   // Clear welcome screen on first message
   hideWelcome();
 
-  // Show user message
-  appendMessage('user', text);
+  // Show user message (with optional attachment preview)
+  appendMessage('user', text, pendingAttachment);
   input.value = '';
   autoResize(input);
+
+  // Snapshot and clear the attachment before the async call
+  const attachment = pendingAttachment;
+  clearAttachment();
 
   // Disable input while streaming
   setStreaming(true);
@@ -206,7 +283,7 @@ async function sendMessage() {
 
   try {
     const body = {
-      message: text,
+      message: text || '(see attached file)',
       newConversation: isNewConversation,
     };
     if (editModeActive) {
@@ -214,6 +291,13 @@ async function sendMessage() {
       body.editOwner  = editModeActive.owner;
       body.editRepo   = editModeActive.repo;
       body.editBranch = editModeActive.defaultBranch || 'main';
+    }
+    if (attachment) {
+      body.attachment = {
+        fileName: attachment.fileName,
+        mimeType: attachment.mimeType,
+        data:     attachment.data,
+      };
     }
 
     const res = await fetch('/api/chat', {
@@ -290,7 +374,7 @@ function hideWelcome() {
 }
 
 let msgCounter = 0;
-function appendMessage(role, text) {
+function appendMessage(role, text, attachment) {
   const id = `msg-${++msgCounter}`;
   const container = document.getElementById('chatMessages');
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -300,11 +384,21 @@ function appendMessage(role, text) {
   div.id = id;
 
   if (role === 'user') {
+    // Build optional attachment HTML
+    let attachHtml = '';
+    if (attachment) {
+      if (attachment.isImage) {
+        attachHtml = `<div class="msg-attachment"><img src="${attachment.dataUrl}" alt="${escapeHtml(attachment.fileName)}" /></div>`;
+      } else {
+        attachHtml = `<div class="msg-attachment"><div class="msg-attachment-doc">📄 <span>${escapeHtml(attachment.fileName)}</span> <small style="color:var(--text-3)">${attachment.sizeLabel}</small></div></div>`;
+      }
+    }
+    const textHtml = text ? `<div class="msg-bubble">${escapeHtml(text)}</div>` : '';
     div.innerHTML = `
       <div class="msg-avatar user">👤</div>
       <div class="msg-body">
         <div class="msg-meta">${now}</div>
-        <div class="msg-bubble">${escapeHtml(text)}</div>
+        ${attachHtml}${textHtml}
       </div>
     `;
   } else {

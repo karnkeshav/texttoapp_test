@@ -267,13 +267,14 @@ async function pooledGenerate({ contents, config, apiKey }) {
  * @param {object} opts.config
  * @param {string} opts.apiKey
  * @param {string} opts.systemInstruction
- * @param {Function} opts.onChunk   - (text: string) => void
- * @param {Function} opts.onDone    - (fullText: string) => void
+ * @param {Function} opts.onChunk     - (text: string) => void
+ * @param {Function} opts.onDone      - (fullText: string) => void
+ * @param {boolean}  opts.multimodal  - when true, only use new-SDK slots (inlineData support)
  */
-async function pooledStream({ contents, config, apiKey, systemInstruction, onChunk, onDone }) {
+async function pooledStream({ contents, config, apiKey, systemInstruction, onChunk, onDone, multimodal = false }) {
   const streamSlots = POOL_CONFIG
     .map((slot, i) => ({ slot, i }))
-    .filter(({ slot }) => slot.mode === 'stream');
+    .filter(({ slot }) => slot.mode === 'stream' && (!multimodal || slot.sdk === 'new'));
 
   for (const { slot, i } of streamSlots) {
     if (!isAvailable(i)) continue;
