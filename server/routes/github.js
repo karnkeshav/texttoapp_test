@@ -110,14 +110,14 @@ router.get('/repo-content', requireAuth, async (req, res) => {
 });
 
 router.post('/push', requireAuth, async (req, res) => {
-  const { owner, repo, files } = req.body;
+  const { owner, repo, files, branch = 'main' } = req.body;
   if (!owner || !repo || !files?.length) {
     return res.status(400).json({ error: 'owner, repo, and files are required' });
   }
 
   try {
     const processed = processFiles(files, process.env.BACKEND_ORIGIN);
-    const repoUrl   = await pushFiles(req.session.githubToken, owner, repo, processed);
+    const repoUrl   = await pushFiles(req.session.githubToken, owner, repo, processed, 'Update app via AppBuilder', branch);
     const pagesUrl  = await enablePages(req.session.githubToken, owner, repo);
     res.json({ success: true, repoUrl, pagesUrl });
   } catch (err) {

@@ -37,9 +37,17 @@
 
     <!-- Your Apps -->
     <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;margin:0 12px 8px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 8px;margin-bottom:8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 8px;margin-bottom:6px;">
         <span class="sidebar-section-label">Your Apps</span>
         <button id="repoRefreshBtn" onclick="loadUserRepos()" title="Refresh" style="background:none;border:none;color:var(--text-3);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:6px;transition:color 0.2s;" onmouseenter="this.style.color='var(--text)'" onmouseleave="this.style.color='var(--text-3)'">↻</button>
+      </div>
+      <!-- Repo search -->
+      <div style="padding:0 4px;margin-bottom:6px;">
+        <input id="repoSearch" type="text" placeholder="Search repos…"
+               oninput="filterRepos(this.value)"
+               style="width:100%;box-sizing:border-box;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--text);font-family:var(--font);outline:none;transition:border-color 0.2s;"
+               onfocus="this.style.borderColor='var(--purple-light)'"
+               onblur="this.style.borderColor='var(--border)'" />
       </div>
       <div id="repoList" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:4px;padding:0 4px;">
         <div style="text-align:center;padding:20px 0;color:var(--text-3);font-size:13px;">Loading…</div>

@@ -59,17 +59,18 @@ async function createRepo(accessToken, name, description = 'Created with AppBuil
 }
 
 /**
- * Push a set of files to the repo's main branch.
+ * Push a set of files to the repo's target branch (default: 'main').
+ * Pass the repo's defaultBranch so edits go to the right branch.
  * files: [{ path: 'index.html', content: '...' }, ...]
  */
-async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add app files via AppBuilder') {
+async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add app files via AppBuilder', branch = 'main') {
   const octokit = getOctokit(accessToken);
 
   // Get the current HEAD commit SHA
   let latestSha;
   let treeSha;
   try {
-    const { data: ref } = await octokit.git.getRef({ owner, repo, ref: 'heads/main' });
+    const { data: ref } = await octokit.git.getRef({ owner, repo, ref: `heads/${branch}` });
     latestSha = ref.object.sha;
     const { data: commit } = await octokit.git.getCommit({ owner, repo, commit_sha: latestSha });
     treeSha = commit.tree.sha;
@@ -107,12 +108,12 @@ async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add a
     parents,
   });
 
-  // Update main branch ref
+  // Update target branch ref
   try {
     await octokit.git.updateRef({
       owner,
       repo,
-      ref: 'heads/main',
+      ref: `heads/${branch}`,
       sha: newCommit.sha,
       force: false,
     });
@@ -121,7 +122,7 @@ async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add a
     await octokit.git.createRef({
       owner,
       repo,
-      ref: 'refs/heads/main',
+      ref: `refs/heads/${branch}`,
       sha: newCommit.sha,
     });
   }

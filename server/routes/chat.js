@@ -60,6 +60,27 @@ const COMPLETE_QUESTIONS = [
 // ── Helpers ───────────────────────────────────────────────────────
 const FRAMEWORK_RE = /\b(react|vue|angular|next\.?js|nuxt\.?js|svelte|gatsby|remix|typescript|webpack|vite)\b/i;
 
+/**
+ * Returns true when the user's message is a question about the code
+ * (explain, describe, what is X) rather than a request to change it.
+ * Build/change verbs always win — if both patterns match, treat as edit.
+ */
+function isConversationalIntent(message) {
+  const m = message.toLowerCase().trim();
+
+  // Explicit build/change intent → always treat as edit
+  if (/\b(add|build|create|make|implement|generate|change|modify|update|fix|improve|refactor|redesign|remove|delete|replace|rewrite|style|design|feature|button|form|menu|chart|graph)\b/.test(m)) {
+    return false;
+  }
+
+  // Question openers or pure information-seeking patterns
+  return (
+    /^(what|how|why|when|where|which|who)\b/.test(m) ||
+    /\?/.test(m) ||
+    /\b(explain|describe|summarize|overview|purpose|tell me|show me|what does|what is|what are|how does|how do|walk me through|analyze|analyse|understand|review|flow|architecture|structure|codebase|logic|working|works)\b/.test(m)
+  );
+}
+
 function interceptFramework(message) {
   const match = message.match(FRAMEWORK_RE);
   return match ? match[0] : null;
@@ -97,6 +118,7 @@ router.post('/chat', requireAuth, async (req, res) => {
     editMode: isEditMode,
     editOwner,
     editRepo,
+    editBranch = 'main',
   } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -137,61 +159,92 @@ router.post('/chat', requireAuth, async (req, res) => {
 
   try {
     // ════════════════════════════════════════════════════════════
-    // EDIT MODE — modify an existing GitHub repo
+    // EDIT MODE — conversational questions OR code changes for an existing repo.
+    // Triggered whenever the client sends editMode=true (any turn in the session).
     // ════════════════════════════════════════════════════════════
-    if (isEditMode && editOwner && editRepo && isFirstMessage) {
-      req.session.editMode  = { owner: editOwner, repo: editRepo };
-      req.session.chatPhase = 'building';
-
-      sendEvent('status', { message: `Fetching current code from ${editOwner}/${editRepo}…` });
-      let currentCode;
-      try {
-        currentCode = await getFileContent(req.session.githubToken, editOwner, editRepo, 'index.html');
-      } catch (fetchErr) {
-        sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
-        return res.end();
+    if (isEditMode && editOwner && editRepo) {
+      // Initialise session context on first edit-mode message
+      if (isFirstMessage) {
+        req.session.editMode    = { owner: editOwner, repo: editRepo, branch: editBranch };
+        req.session.chatPhase   = 'editing';
+        req.session.currentCode = null; // fetched lazily below
       }
 
-      if (!currentCode) {
-        sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
-        return res.end();
+      // Fetch (and cache) the current index.html so we only hit GitHub once per session
+      if (!req.session.currentCode) {
+        sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
+        try {
+          req.session.currentCode = await getFileContent(
+            req.session.githubToken, editOwner, editRepo, 'index.html'
+          );
+        } catch (fetchErr) {
+          sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
+          return res.end();
+        }
+        if (!req.session.currentCode) {
+          sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
+          return res.end();
+        }
       }
 
-      // Build the edit prompt — inject current code + change request
+      req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+      const onChunk = (text) => sendEvent('chunk', { text });
+      let capturedResponse = null;
+      const onEditDone = (text) => { capturedResponse = text; };
+
+      // ── Conversational intent: explain / describe / answer questions ──
+      if (isConversationalIntent(trimmedMessage)) {
+        const analysisPrompt =
+          `You are a senior developer reviewing the "${editOwner}/${editRepo}" repository for the user.\n\n` +
+          `CURRENT index.html (excerpt — up to 8 KB shown):\n\`\`\`html\n` +
+          `${req.session.currentCode.slice(0, 8000)}\n\`\`\`\n\n` +
+          `USER'S QUESTION: ${trimmedMessage}\n\n` +
+          `Answer clearly and specifically. Reference actual code sections when relevant. ` +
+          `Do NOT generate new HTML. Do NOT output REPO_NAME. Keep the response conversational.`;
+
+        await antigravity.streamChat(analysisPrompt, [], null, onChunk, onEditDone, '');
+        const answer = capturedResponse || '';
+        req.session.chatHistory.push({ role: 'assistant', content: answer });
+        // No editMode in done payload → no push button shown for plain answers
+        sendEvent('done', { text: answer });
+        res.end();
+        return;
+      }
+
+      // ── Edit intent: apply the requested change, return full updated HTML ──
       const editPrompt =
         `EDIT MODE — modify this existing app. Return the COMPLETE updated HTML file.\n` +
         `Repository: ${editOwner}/${editRepo}\n\n` +
-        `CURRENT CODE:\n\`\`\`html\n${currentCode}\n\`\`\`\n\n` +
+        `CURRENT CODE:\n\`\`\`html\n${req.session.currentCode}\n\`\`\`\n\n` +
         `USER'S CHANGE REQUEST: ${trimmedMessage}\n\n` +
         `INSTRUCTIONS: Apply ONLY the requested changes. Keep all working features intact. ` +
         `Output the entire updated HTML file in a single \`\`\`html block.`;
 
-      req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
-
-      const onChunk = (text) => sendEvent('chunk', { text });
-      let capturedEdit = null;
-      const onDone  = (fullText) => { capturedEdit = fullText; };
-
       sendEvent('status', { message: 'Applying your changes…' });
-      await antigravity.streamChat(editPrompt, [], null, onChunk, onDone, '');
+      await antigravity.streamChat(editPrompt, [], null, onChunk, onEditDone, '');
 
-      if (!capturedEdit || !/```html/i.test(capturedEdit)) {
+      if (!capturedResponse || !/```html/i.test(capturedResponse)) {
         sendEvent('error', { message: 'Could not generate the updated code. Please try again.' });
         return res.end();
       }
 
-      // Semantic quality pass — verify the requested changes were actually made
-      let finalEdit = capturedEdit;
+      // Semantic quality pass — verify the requested changes were actually applied
+      let finalEdit = capturedResponse;
       try {
         sendEvent('status', { message: 'Verifying changes…' });
-        finalEdit = await fullQualityPass(capturedEdit, `Change request: ${trimmedMessage}`, apiKey);
-        if (finalEdit !== capturedEdit) sendEvent('status', { message: 'Self-heal complete ✓' });
+        finalEdit = await fullQualityPass(capturedResponse, `Change request: ${trimmedMessage}`, apiKey);
+        if (finalEdit !== capturedResponse) sendEvent('status', { message: 'Self-heal complete ✓' });
       } catch (qErr) {
         console.warn('[QualityPass] Edit mode non-fatal:', qErr.message);
       }
 
+      // Update cached code so the next edit turn builds on this version
+      const updatedHtmlMatch = finalEdit.match(/```html\s*([\s\S]*?)```/i);
+      if (updatedHtmlMatch) req.session.currentCode = updatedHtmlMatch[1].trim();
+
       req.session.chatHistory.push({ role: 'assistant', content: finalEdit });
-      sendEvent('done', { text: finalEdit, editMode: true, editOwner, editRepo });
+      const branch = req.session.editMode?.branch || editBranch;
+      sendEvent('done', { text: finalEdit, editMode: true, editOwner, editRepo, editBranch: branch });
       res.end();
       return;
     }
