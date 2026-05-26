@@ -35,11 +35,14 @@
       </div>
     </div>
 
-    <!-- GitHub account info -->
-    <div style="margin:0 20px 16px;">
-      <div class="sidebar-section-label" style="margin-bottom:8px;">Deployment</div>
-      <div style="background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:12px 14px;font-size:13px;color:var(--text-2);">
-        <span style="color:var(--green);">✅</span> New repos are created automatically on GitHub and deployed to GitHub Pages.
+    <!-- Your Apps -->
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column;margin:0 12px 8px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:0 8px;margin-bottom:8px;">
+        <span class="sidebar-section-label">Your Apps</span>
+        <button id="repoRefreshBtn" onclick="loadUserRepos()" title="Refresh" style="background:none;border:none;color:var(--text-3);cursor:pointer;font-size:14px;padding:2px 6px;border-radius:6px;transition:color 0.2s;" onmouseenter="this.style.color='var(--text)'" onmouseleave="this.style.color='var(--text-3)'">↻</button>
+      </div>
+      <div id="repoList" style="overflow-y:auto;flex:1;display:flex;flex-direction:column;gap:4px;padding:0 4px;">
+        <div style="text-align:center;padding:20px 0;color:var(--text-3);font-size:13px;">Loading…</div>
       </div>
     </div>
 
@@ -82,8 +85,11 @@
         <div class="welcome-icon">⚡</div>
         <h2 class="welcome-title">What do you want to build?</h2>
         <p class="welcome-sub">
-          Describe any app or website in plain English. AppBuilder will ask you a few questions, then create your complete, live website — completely free.
+          Describe any app or website in plain English. AppBuilder will ask a few quick questions, then build and deploy your complete website — free.
         </p>
+        <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
+          ✏️ <strong>Edit mode</strong> — describe the changes you want to make to <span id="editModeBannerRepo"></span>
+        </div>
         <div class="welcome-repo-warning" id="repoWarning" style="display:none;">
           <span>⚠️</span>
           <span>Please sign in with GitHub first.</span>
