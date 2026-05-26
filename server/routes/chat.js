@@ -61,7 +61,8 @@ router.post('/chat', requireAuth, async (req, res) => {
       sendEvent('status', { message: 'Analysing your request…' });
 
       const apiKey = process.env.GEMINI_API_KEY;
-      const model  = process.env.GEMINI_MODEL || 'gemini-3.1-flash-lite';
+      // Plan phase uses a smarter model for reliable structured JSON output
+      const model  = process.env.PLAN_MODEL || 'gemini-2.0-flash';
       const plan   = await analyzePlanPhase(trimmedMessage, apiKey, model);
 
       console.log(`[Plan] Archetype: ${plan.archetype} | AskBack: ${plan.requiresAskBack}`);
