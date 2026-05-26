@@ -37,6 +37,30 @@ app.use('/auth', googleAuthRoutes);
 app.use('/api', chatRoutes);
 app.use('/api/github', githubRoutes);
 
+// ── Telemetry receiver — in-memory deduplication cache ───────────
+// Prevents identical runtime errors from being processed multiple times.
+// State resets on Render container restart — intentionally stateless.
+const activeErrorCache = new Map();
+
+app.post('/api/telemetry/report', (req, res) => {
+  const { appPath, errorMsg, source, line } = req.body || {};
+  if (!errorMsg) return res.status(204).end();
+
+  const signature = `${appPath}:${errorMsg}:${line}`;
+
+  if (activeErrorCache.has(signature)) {
+    // Exact same error already logged — discard to protect quota
+    return res.json({ status: 'ignored_duplicate' });
+  }
+
+  // Cap cache size to protect server memory on free-tier containers
+  if (activeErrorCache.size >= 500) activeErrorCache.clear();
+  activeErrorCache.set(signature, Date.now());
+
+  console.warn('[Telemetry]', { appPath, errorMsg, source, line });
+  res.json({ status: 'logged' });
+});
+
 // ── Diagnostic endpoint (dev only) ───────────────────────────────
 app.get('/api/diagnose', async (req, res) => {
   const { OAuth2Client } = require('google-auth-library');

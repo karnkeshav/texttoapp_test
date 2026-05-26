@@ -43,7 +43,7 @@ async function createRepo(accessToken, name, description = 'Created with AppBuil
         name: repoName,
         description,
         private: false,
-        auto_init: false,
+        auto_init: true,   // creates an initial commit so main branch always exists
       });
       return { name: data.name, owner: data.owner.login, url: data.html_url };
     } catch (err) {
@@ -74,9 +74,8 @@ async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add a
     const { data: commit } = await octokit.git.getCommit({ owner, repo, commit_sha: latestSha });
     treeSha = commit.tree.sha;
   } catch (err) {
-    // Repo might be empty — create an initial empty tree
-    const { data: emptyTree } = await octokit.git.createTree({ owner, repo, tree: [] });
-    treeSha = emptyTree.sha;
+    // Repo is empty — we'll create a root commit with no base tree
+    treeSha = null;
     latestSha = null;
   }
 
@@ -93,13 +92,10 @@ async function pushFiles(accessToken, owner, repo, files, commitMessage = 'Add a
     })
   );
 
-  // Create new tree
-  const { data: newTree } = await octokit.git.createTree({
-    owner,
-    repo,
-    base_tree: treeSha,
-    tree: treeItems,
-  });
+  // Create new tree (omit base_tree for empty repos to avoid API errors)
+  const treePayload = { owner, repo, tree: treeItems };
+  if (treeSha) treePayload.base_tree = treeSha;
+  const { data: newTree } = await octokit.git.createTree(treePayload);
 
   // Create commit
   const parents = latestSha ? [latestSha] : [];
