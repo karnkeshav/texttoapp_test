@@ -1,5 +1,5 @@
 const express = require('express');
-const { listRepos, createRepo, pushFiles, enablePages } = require('../services/githubService');
+const { listRepos, createRepo, pushFiles, enablePages, getFileContent } = require('../services/githubService');
 const { auditAndHeal } = require('../services/codeQuality');
 
 const router = express.Router();
@@ -92,6 +92,20 @@ router.get('/repos', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('List repos error:', err.message);
     res.status(500).json({ error: 'Failed to fetch repositories' });
+  }
+});
+
+// Fetch a single file from a repo (used by edit mode to load current code)
+router.get('/repo-content', requireAuth, async (req, res) => {
+  const { owner, repo, path = 'index.html' } = req.query;
+  if (!owner || !repo) return res.status(400).json({ error: 'owner and repo are required' });
+  try {
+    const content = await getFileContent(req.session.githubToken, owner, repo, path);
+    if (content === null) return res.status(404).json({ error: `${path} not found in ${owner}/${repo}` });
+    res.json({ content });
+  } catch (err) {
+    console.error('Repo content error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

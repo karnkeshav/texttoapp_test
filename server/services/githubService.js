@@ -146,4 +146,21 @@ async function enablePages(accessToken, owner, repo) {
   return `https://${owner}.github.io/${repo}`;
 }
 
-module.exports = { listRepos, getUser, createRepo, pushFiles, enablePages };
+/**
+ * Fetch a single file's content from a repo.
+ * Returns the decoded UTF-8 string, or null if the file doesn't exist.
+ */
+async function getFileContent(accessToken, owner, repo, path = 'index.html') {
+  const octokit = getOctokit(accessToken);
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path });
+    if (Array.isArray(data)) throw new Error('Path is a directory, not a file');
+    if (!data.content) return null;
+    return Buffer.from(data.content, 'base64').toString('utf-8');
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
+module.exports = { listRepos, getUser, createRepo, pushFiles, enablePages, getFileContent };

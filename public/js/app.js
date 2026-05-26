@@ -5,10 +5,14 @@ let isNewConversation = true;
 const pendingFiles = new Map(); // fileId → { repoName, files }
 let fileIdCounter = 0;
 
+// ── Edit mode state ───────────────────────────────────────────────
+let editModeActive = null; // null | { owner, repo }
+
 // ── Init ─────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
   await loadUser();
   autoResize(document.getElementById('chatInput'));
+  loadUserRepos(); // populate sidebar on load
 });
 
 // ── User profile ─────────────────────────────────────────────────
@@ -34,26 +38,95 @@ async function loadUser() {
 
 // ── New conversation ─────────────────────────────────────────────
 function startNewConversation() {
-  // Reset AG session flag so the next message gets a fresh session_id on the server
   isNewConversation = true;
+  editModeActive = null;
 
-  // Clear the chat UI
   const container = document.getElementById('chatMessages');
-  container.innerHTML = '';
-
-  // Re-inject welcome screen
   container.innerHTML = `
     <div class="welcome-screen" id="welcomeScreen">
       <div class="welcome-icon">⚡</div>
       <h2 class="welcome-title">What do you want to build?</h2>
       <p class="welcome-sub">
-        Describe any app or website in plain English. AppBuilder will ask you a few questions,
-        then create your complete, live website — completely free.
+        Describe any app or website in plain English. AppBuilder will ask a few quick questions,
+        then build and deploy your complete website — free.
       </p>
+      <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
+        ✏️ <strong>Edit mode</strong> — describe the changes to <span id="editModeBannerRepo"></span>
+      </div>
     </div>`;
 
-  document.getElementById('chatInput').placeholder =
-    'Describe the app you want to build…';
+  document.getElementById('chatInput').placeholder = 'Describe the app you want to build…';
+  document.getElementById('topbarSub').textContent = 'Describe your app to get started';
+  closeSidebar();
+  setStatus('Ready', false);
+
+  // De-highlight any selected repo in sidebar
+  document.querySelectorAll('.repo-item-btn').forEach(b => b.classList.remove('active'));
+}
+
+// ── Repo browser ──────────────────────────────────────────────────
+async function loadUserRepos() {
+  const list = document.getElementById('repoList');
+  if (!list) return;
+  list.innerHTML = '<div style="text-align:center;padding:16px 0;color:var(--text-3);font-size:13px;">Loading…</div>';
+
+  try {
+    const res  = await fetch('/api/github/repos');
+    if (!res.ok) throw new Error('Failed');
+    const repos = await res.json();
+
+    if (!repos.length) {
+      list.innerHTML = '<div style="text-align:center;padding:16px 0;color:var(--text-3);font-size:13px;">No repositories yet.<br>Build your first app!</div>';
+      return;
+    }
+
+    list.innerHTML = repos.slice(0, 20).map(r => {
+      const [owner, name] = r.fullName.split('/');
+      return `
+        <button class="repo-item-btn" data-owner="${escapeHtml(owner)}" data-repo="${escapeHtml(name)}"
+                onclick="selectRepoForEdit('${escapeHtml(owner)}','${escapeHtml(name)}')"
+                style="width:100%;text-align:left;background:none;border:none;border-radius:8px;padding:8px 10px;cursor:pointer;color:var(--text-2);font-size:13px;display:flex;align-items:center;gap:8px;transition:background 0.15s,color 0.15s;"
+                onmouseenter="this.style.background='var(--surface)';this.style.color='var(--text)'"
+                onmouseleave="if(!this.classList.contains('active')){this.style.background='none';this.style.color='var(--text-2)'}">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" style="flex-shrink:0;opacity:0.6"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${escapeHtml(name)}</span>
+        </button>`;
+    }).join('');
+
+  } catch {
+    list.innerHTML = '<div style="text-align:center;padding:16px 0;color:var(--text-3);font-size:13px;">Could not load repos.</div>';
+  }
+}
+
+function selectRepoForEdit(owner, repo) {
+  // Reset conversation
+  isNewConversation = true;
+  editModeActive = { owner, repo };
+
+  // Update welcome banner
+  const container = document.getElementById('chatMessages');
+  // Re-render welcome with edit banner
+  container.innerHTML = `
+    <div class="welcome-screen" id="welcomeScreen">
+      <div class="welcome-icon">✏️</div>
+      <h2 class="welcome-title" style="font-size:clamp(20px,3vw,28px);">Editing: <span style="color:var(--purple-light);">${escapeHtml(repo)}</span></h2>
+      <p class="welcome-sub">Describe the changes you want to make. AppBuilder will fetch the current code, apply your changes, and push a new commit.</p>
+    </div>`;
+
+  // Update topbar
+  document.getElementById('topbarSub').textContent = `Editing ${owner}/${repo}`;
+
+  // Update input placeholder
+  document.getElementById('chatInput').placeholder = `Describe your changes to ${repo}…`;
+  document.getElementById('chatInput').focus();
+
+  // Highlight selected repo in list
+  document.querySelectorAll('.repo-item-btn').forEach(b => {
+    const isSelected = b.dataset.owner === owner && b.dataset.repo === repo;
+    b.classList.toggle('active', isSelected);
+    b.style.background = isSelected ? 'var(--surface)' : 'none';
+    b.style.color = isSelected ? 'var(--text)' : 'var(--text-2)';
+  });
 
   closeSidebar();
   setStatus('Ready', false);
@@ -103,13 +176,20 @@ async function sendMessage() {
   const aiMsgId = appendMessage('ai', null);
 
   try {
+    const body = {
+      message: text,
+      newConversation: isNewConversation,
+    };
+    if (editModeActive) {
+      body.editMode  = true;
+      body.editOwner = editModeActive.owner;
+      body.editRepo  = editModeActive.repo;
+    }
+
     const res = await fetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: text,
-        newConversation: isNewConversation,
-      }),
+      body: JSON.stringify(body),
     });
 
     isNewConversation = false;
@@ -140,9 +220,14 @@ async function sendMessage() {
           } else if (event.type === 'status') {
             setStatus(event.message, true);
           } else if (event.type === 'done') {
-            aiText = event.text || aiText; // fall back to accumulated text if done.text is empty
+            aiText = event.text || aiText;
             updateAIBubble(aiMsgId, aiText);
-            finalText = aiText; // defer checkForCode OUTSIDE the try-catch
+            // Carry edit context for post-stream handling
+            if (event.editMode) {
+              finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo };
+            } else {
+              finalText = aiText;
+            }
           } else if (event.type === 'error') {
             updateAIBubble(aiMsgId, `⚠️ ${event.message}`);
           }
@@ -150,8 +235,14 @@ async function sendMessage() {
       }
     }
 
-    // checkForCode runs outside try-catch so errors surface rather than silently drop the button
-    if (finalText !== null) checkForCode(finalText);
+    // Post-stream: deploy button (new app) or push-update button (edit mode)
+    if (finalText !== null) {
+      if (finalText && typeof finalText === 'object' && finalText.editMode) {
+        showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo);
+      } else {
+        checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
+      }
+    }
   } catch (err) {
     updateAIBubble(aiMsgId, '⚠️ Something went wrong. Please try again.');
     console.error(err);
@@ -265,6 +356,91 @@ function checkForCode(text) {
   if (jsMatch)  files.push({ path: 'script.js',  content: jsMatch[1].trim() });
 
   showDeployPrompt(repoName, files);
+}
+
+// ── Push-update card (edit mode) ─────────────────────────────────
+function showPushUpdatePrompt(fullText, owner, repo) {
+  // Extract the updated HTML from the AI response
+  let htmlContent = null;
+  const m = fullText.match(/```html\s*([\s\S]*?)```/i)
+         || fullText.match(/```html\s*([\s\S]*?<\/html>)/i);
+  if (m) htmlContent = m[1].trim();
+  if (!htmlContent || htmlContent.length < 50) {
+    // Fallback: show deploy button instead
+    checkForCode(fullText);
+    return;
+  }
+
+  const fileId = `fid-${++fileIdCounter}`;
+  pendingFiles.set(fileId, { owner, repo, files: [{ path: 'index.html', content: htmlContent }] });
+
+  const container = document.getElementById('chatMessages');
+  const div = document.createElement('div');
+  div.style.cssText = 'padding:16px 0;max-width:780px;align-self:flex-start;width:100%;';
+  div.innerHTML = `
+    <div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.25);border-radius:14px;padding:24px;">
+      <div style="font-size:16px;font-weight:700;margin-bottom:8px;">✅ Changes ready to push!</div>
+      <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+        AppBuilder has applied your changes to
+        <strong style="color:#4ade80;">${escapeHtml(owner)}/${escapeHtml(repo)}</strong>.
+        Push a new commit to update your live site.
+      </p>
+      <button data-fileid="${fileId}" onclick="pushUpdate(this.dataset.fileid, this)"
+              style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;font-family:var(--font);">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 5v14M5 12l7-7 7 7"/></svg>
+        Push update to GitHub
+      </button>
+    </div>`;
+  container.appendChild(div);
+  scrollToBottom();
+}
+
+async function pushUpdate(fileId, btn) {
+  const pending = pendingFiles.get(fileId);
+  if (!pending) return;
+
+  btn.disabled = true;
+  btn.innerHTML = '<span style="opacity:0.7">Pushing…</span>';
+
+  try {
+    const res  = await fetch('/api/github/push', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        owner: pending.owner,
+        repo:  pending.repo,
+        files: pending.files,
+      }),
+    });
+    const data = await res.json();
+    const card = btn.closest('div[style*="border-radius:14px"]');
+
+    if (data.success) {
+      card.innerHTML = `
+        <div class="push-success">
+          <h4>🎉 Update pushed!</h4>
+          <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+            Your changes are live. GitHub Pages usually updates within ~60 seconds.
+          </p>
+          <p style="margin-bottom:8px;">
+            🔗 <strong>Live site:</strong>
+            <a href="${data.pagesUrl}" target="_blank" style="color:var(--purple-light);">${data.pagesUrl}</a>
+          </p>
+          <p style="margin-bottom:0;">
+            📁 <strong>Repository:</strong>
+            <a href="${data.repoUrl}" target="_blank" style="color:var(--purple-light);">${data.repoUrl}</a>
+          </p>
+        </div>`;
+    } else {
+      btn.disabled = false;
+      btn.innerHTML = 'Retry push';
+      btn.closest('p') && (btn.closest('p').textContent = `Error: ${data.error}`);
+    }
+  } catch {
+    btn.disabled = false;
+    btn.innerHTML = 'Retry push';
+  }
+  scrollToBottom();
 }
 
 function showDeployPrompt(repoName, files) {

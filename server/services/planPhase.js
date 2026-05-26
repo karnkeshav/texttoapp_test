@@ -128,4 +128,41 @@ async function analyzePlanPhase(userMessage, apiKey, _model) {
   };
 }
 
-module.exports = { analyzePlanPhase };
+/**
+ * Compile 5 gathered Q&A answers into a structured build brief.
+ * Used by complete-mode conversations after all questions are answered.
+ *
+ * @param {Array<{q:string, a:string}>} gatheredAnswers
+ * @param {string} originalRequest
+ * @param {string} apiKey
+ * @returns {Promise<string>} — 200-350 word spec
+ */
+async function compileSpec(gatheredAnswers, originalRequest, apiKey) {
+  const qaText = gatheredAnswers
+    .map((qa, i) => `Q${i + 1}: ${qa.q.split('\n')[0].replace(/\*\*/g, '').trim()}\nAnswer: ${qa.a}`)
+    .join('\n\n');
+
+  const prompt = `You are a senior product manager writing a build brief for an AI frontend developer.
+
+Based on this requirements interview, write a focused specification (200–350 words) covering:
+1. Core purpose — what the app does and the problem it solves
+2. Target users — who uses it, their context, technical level
+3. Must-have features — numbered list, specific
+4. Technical / UX constraints (offline, mobile-first, data export, etc.)
+5. Visual direction — style, mood, colours
+
+Original request: "${originalRequest}"
+
+Interview Q&A:
+${qaText}
+
+Write in imperative, builder-focused language. Be specific and actionable. No waffle.`;
+
+  return pooledGenerate({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    config: { temperature: 0.3, maxOutputTokens: 700 },
+    apiKey,
+  });
+}
+
+module.exports = { analyzePlanPhase, compileSpec };
