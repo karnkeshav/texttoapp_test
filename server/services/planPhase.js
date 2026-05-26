@@ -116,10 +116,12 @@ async function analyzePlanPhase(userMessage, apiKey, model = 'gemini-2.0-flash')
       responseSchema: RESPONSE_SCHEMA,
       temperature: 0.3,
       maxOutputTokens: 600,
+      thinkingConfig: { thinkingBudget: 0 }, // disable thinking — required for .text on 2.5+ models
     },
   });
 
-  const parsed = JSON.parse(response.text);
+  const rawText = response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+  const parsed = JSON.parse(rawText);
   return {
     archetype:       parsed.archetype       || 'NOVICE',
     requiresAskBack: parsed.requiresAskBack ?? false,

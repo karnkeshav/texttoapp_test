@@ -185,12 +185,16 @@ HTML FILE:
 ${code}`;
 
   const response = await ai.models.generateContent({
-    model: model || 'gemini-2.0-flash',
+    model: model || 'gemini-2.5-flash',
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.1, maxOutputTokens: 8192 },
+    config: {
+      temperature: 0.1,
+      maxOutputTokens: 8192,
+      thinkingConfig: { thinkingBudget: 0 }, // disable thinking — required for .text on 2.5+ models
+    },
   });
 
-  const text   = response.text || '';
+  const text = response.text ?? response.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
   const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
   return fenced ? fenced[1].trim() : text.trim();
 }

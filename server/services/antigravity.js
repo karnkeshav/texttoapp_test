@@ -286,9 +286,12 @@ function extractText(event) {
 }
 
 // ── Fallback trigger conditions ───────────────────────────────────
+// Fallback to Gemini on ANY HTTP error from Antigravity (quota, agent config,
+// server errors, bad request, deprecated endpoint — everything).
+// Only re-throw for true network-level failures where no HTTP response arrived
+// (ECONNREFUSED, ETIMEDOUT, DNS failure) — Gemini would fail for the same reason.
 function shouldFallback(err) {
-  const status = err.response?.status;
-  return status === 429 || status === 503 || status === 502 || status === 500;
+  return err.response != null; // HTTP response received (any status) → fallback
 }
 
 // ── PRIMARY: Antigravity Interactions API ─────────────────────────
@@ -370,7 +373,7 @@ async function streamFromGemini(newUserMessage, history, apiKey, modelName, onCh
 async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone, enrichedNotes = '') {
   const apiKey   = process.env.GEMINI_API_KEY;
   const agentId  = process.env.ANTIGRAVITY_AGENT_ID || 'antigravity-preview-05-2026';
-  const gemModel = process.env.GEMINI_MODEL         || 'gemini-3.1-flash-lite';
+  const gemModel = process.env.GEMINI_MODEL         || 'gemini-2.5-flash';
 
   if (!apiKey) throw new Error('GEMINI_API_KEY not set in .env');
 

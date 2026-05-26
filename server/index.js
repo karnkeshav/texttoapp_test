@@ -69,8 +69,8 @@ app.get('/api/diagnose', async (req, res) => {
     github_logged_in:       !!req.session.githubToken,
     github_user:            req.session.user?.login || null,
     gemini_api_configured:  !!apiKey,
-    gemini_model:           process.env.GEMINI_MODEL  || 'gemini-2.0-flash',
-    plan_model:             process.env.PLAN_MODEL    || 'gemini-2.0-flash',
+    gemini_model:           process.env.GEMINI_MODEL  || 'gemini-2.5-flash',
+    plan_model:             process.env.PLAN_MODEL    || 'gemini-2.5-flash',
     antigravity_agent:      process.env.ANTIGRAVITY_AGENT_ID || null,
     backend_origin:         process.env.BACKEND_ORIGIN || null,
     gemini_live_test:       null,
@@ -84,9 +84,13 @@ app.get('/api/diagnose', async (req, res) => {
       const res = await ai.models.generateContent({
         model: result.gemini_model,
         contents: [{ role: 'user', parts: [{ text: 'Reply with the single word OK.' }] }],
-        config: { maxOutputTokens: 10 },
+        config: {
+          maxOutputTokens: 10,
+          thinkingConfig: { thinkingBudget: 0 }, // disable thinking — required for .text on 2.5+ models
+        },
       });
-      result.gemini_live_test = { ok: true, response: (res.text || '').trim().slice(0, 40) };
+      const resText = res.text ?? res.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+      result.gemini_live_test = { ok: true, response: resText.trim().slice(0, 40) };
     } catch (err) {
       result.gemini_live_test = { ok: false, error: err.message };
     }
