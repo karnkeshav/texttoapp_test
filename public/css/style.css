@@ -1472,6 +1472,38 @@ body {
   gap: 10px;
 }
 
+/* ── Welcome mode cards ──────────────────────────────────────────── */
+.welcome-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 14px;
+  max-width: 560px;
+  width: 100%;
+  margin-top: 4px;
+}
+.welcome-card {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 20px 18px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s, transform 0.15s, box-shadow 0.2s;
+  user-select: none;
+}
+.welcome-card:hover {
+  border-color: rgba(124,58,237,0.5);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px rgba(124,58,237,0.15);
+}
+.welcome-card:active { transform: translateY(0); }
+.welcome-card-icon { font-size: 26px; margin-bottom: 10px; }
+.welcome-card-title { font-size: 14px; font-weight: 700; margin-bottom: 5px; color: var(--text-1); }
+.welcome-card-desc  { font-size: 12px; color: var(--text-3); line-height: 1.55; }
+@media (max-width: 500px) {
+  .welcome-cards-grid { grid-template-columns: 1fr; max-width: 340px; }
+}
+
 /* Message bubbles */
 .message { display: flex; gap: 14px; max-width: 780px; }
 .message.user { flex-direction: row-reverse; align-self: flex-end; }

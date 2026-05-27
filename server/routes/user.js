@@ -59,7 +59,7 @@ router.get('/packages', (req, res) => {
       name:        'Standard Builder',
       tagline:     'For individuals & growing teams',
       price:       '₹4,999',
-      priceSub:    'per month',
+      priceSub:    'lifetime access',
       features:    [
         '20 builds per day',
         '20 chat sessions per day',

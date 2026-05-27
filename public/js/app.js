@@ -4,6 +4,7 @@ let isStreaming = false;
 let isNewConversation = true;
 const pendingFiles = new Map(); // fileId → { repoName, files }
 let fileIdCounter = 0;
+let _userAuthenticated = false; // set by loadUser(); controls welcome card visibility
 
 // ── Deploy mode — set from URL param ?mode=cloudflare ────────────
 // 'github'     → user arrived via /auth/github, deploy to GitHub Pages
@@ -144,6 +145,10 @@ async function loadUser() {
       if (repoSection) repoSection.style.display = 'none';
     }
 
+    // Show mode-selection cards for any authenticated user
+    _userAuthenticated = true;
+    showWelcomeCards();
+
   } catch {
     // Fail silently — app still usable without auth info
     if (deployMode === null) deployMode = 'cloudflare';
@@ -168,6 +173,49 @@ function updateWelcomeForMode() {
 }
 
 
+// ── Welcome mode cards ────────────────────────────────────────────
+function showWelcomeCards() {
+  if (!_userAuthenticated) return;
+  const cards = document.getElementById('welcomeCards');
+  if (cards) cards.style.display = 'grid';
+}
+
+/**
+ * Pre-fill the input with a starter prompt for the chosen mode,
+ * then focus it so the user just types and hits send.
+ */
+function startWithMode(mode) {
+  const input = document.getElementById('chatInput');
+  if (!input) return;
+
+  const starters = {
+    build:   '',
+    convert: 'Convert this to ',
+    chat:    '',
+    vision:  '',
+  };
+
+  const placeholders = {
+    build:   "Describe the app you want to build… (e.g. 'A recipe website with search and dark theme')",
+    convert: "Describe what to create — e.g. 'Convert my notes to a Word doc' or 'Make a monthly sales Excel sheet'",
+    chat:    "Ask me anything — a question, analysis, research, or advice…",
+    vision:  "Describe what you'd like to know about the image (then attach it with the 📎 button)",
+  };
+
+  // If the mode has a starter prefix, set it; otherwise leave empty for natural typing
+  if (starters[mode]) {
+    input.value = starters[mode];
+  }
+  input.placeholder = placeholders[mode] || input.placeholder;
+  input.focus();
+  autoResize(input);
+
+  // For vision mode, open the file picker immediately
+  if (mode === 'vision') {
+    openAttachPicker();
+  }
+}
+
 // ── New conversation ─────────────────────────────────────────────
 function startNewConversation() {
   isNewConversation = true;
@@ -182,10 +230,35 @@ function startNewConversation() {
         Describe any app or website in plain English. Ready4Launch will ask a few quick questions,
         then build and deploy your complete website — free.
       </p>
+      <div class="welcome-cards-grid" id="welcomeCards" style="display:none;">
+        <div class="welcome-card" onclick="startWithMode('build')">
+          <div class="welcome-card-icon">🏗️</div>
+          <div class="welcome-card-title">Build an App</div>
+          <div class="welcome-card-desc">Turn any idea into a full web app in minutes — just describe it in plain English</div>
+        </div>
+        <div class="welcome-card" onclick="startWithMode('convert')">
+          <div class="welcome-card-icon">📄</div>
+          <div class="welcome-card-title">Convert a Document</div>
+          <div class="welcome-card-desc">Export content to Word, Excel, PowerPoint or PDF instantly</div>
+        </div>
+        <div class="welcome-card" onclick="startWithMode('chat')">
+          <div class="welcome-card-icon">💬</div>
+          <div class="welcome-card-title">Chat &amp; Analyse</div>
+          <div class="welcome-card-desc">Ask anything, analyse data, research topics or get expert answers</div>
+        </div>
+        <div class="welcome-card" onclick="startWithMode('vision')">
+          <div class="welcome-card-icon">🖼️</div>
+          <div class="welcome-card-title">Analyse an Image</div>
+          <div class="welcome-card-desc">Upload any photo or diagram for instant AI-powered visual analysis</div>
+        </div>
+      </div>
       <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
         ✏️ <strong>Edit mode</strong> — describe the changes to <span id="editModeBannerRepo"></span>
       </div>
     </div>`;
+
+  // Re-show cards if user is still signed in
+  showWelcomeCards();
 
   document.getElementById('chatInput').placeholder = 'Describe the app you want to build…';
   document.getElementById('topbarSub').textContent = 'Describe your app to get started';

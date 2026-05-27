@@ -37,12 +37,12 @@ const PACKAGES = {
   },
   standard: {
     name:                    'Standard Builder',
-    daysValid:               30,
+    daysValid:               36500,   // effectively lifetime (100 years)
     promptsPerSectionPerDay: 20,
     unlimited:               false,
     priceINR:                4999,
     priceLabel:              '₹4,999',
-    priceSub:                'per month',
+    priceSub:                'lifetime access',
   },
   professional: {
     name:                    'Professional Builder',

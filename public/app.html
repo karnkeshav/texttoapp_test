@@ -109,6 +109,30 @@
         <p class="welcome-sub" id="welcomeSub">
           Describe any app or website in plain English. Ready4Launch will ask a few quick questions, then build and deploy your complete website — free.
         </p>
+        <!-- Mode selection cards (shown after sign-in) -->
+        <div class="welcome-cards-grid" id="welcomeCards" style="display:none;">
+          <div class="welcome-card" onclick="startWithMode('build')">
+            <div class="welcome-card-icon">🏗️</div>
+            <div class="welcome-card-title">Build an App</div>
+            <div class="welcome-card-desc">Turn any idea into a full web app in minutes — just describe it in plain English</div>
+          </div>
+          <div class="welcome-card" onclick="startWithMode('convert')">
+            <div class="welcome-card-icon">📄</div>
+            <div class="welcome-card-title">Convert a Document</div>
+            <div class="welcome-card-desc">Export content to Word, Excel, PowerPoint or PDF instantly</div>
+          </div>
+          <div class="welcome-card" onclick="startWithMode('chat')">
+            <div class="welcome-card-icon">💬</div>
+            <div class="welcome-card-title">Chat &amp; Analyse</div>
+            <div class="welcome-card-desc">Ask anything, analyse data, research topics or get expert answers</div>
+          </div>
+          <div class="welcome-card" onclick="startWithMode('vision')">
+            <div class="welcome-card-icon">🖼️</div>
+            <div class="welcome-card-title">Analyse an Image</div>
+            <div class="welcome-card-desc">Upload any photo or diagram for instant AI-powered visual analysis</div>
+          </div>
+        </div>
+
         <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
           ✏️ <strong>Edit mode</strong> — describe the changes you want to make to <span id="editModeBannerRepo"></span>
         </div>
