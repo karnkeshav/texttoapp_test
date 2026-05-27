@@ -151,7 +151,7 @@ async function toDocx(elements) {
   const body = (text, opts = {}) => new TextRun({
     text,
     font: 'Calibri',
-    size: 18,                    // 9 pt
+    size: 20,                    // 10 pt
     color: opts.color || pal.body,
     bold:  opts.bold  || false,
     italics: opts.italics || false,
@@ -203,7 +203,7 @@ async function toDocx(elements) {
 
     } else if (el.type === 'code') {
       children.push(new Paragraph({
-        children: [new TextRun({ text: el.text, font: 'Courier New', size: 16, color: '333333' })],
+        children: [new TextRun({ text: el.text, font: 'Courier New', size: 18, color: '333333' })],
         shading: { type: ShadingType.SOLID, color: 'F4F4F4' },
         spacing: { after: 80 },
       }));
@@ -238,7 +238,7 @@ async function toDocx(elements) {
     styles: {
       default: {
         document: {
-          run: { font: 'Calibri', size: 18 },
+          run: { font: 'Calibri', size: 20 },
         },
       },
     },
@@ -393,167 +393,343 @@ async function toPptx(elements) {
   const PptxGenJS = require('pptxgenjs');
   const pptx = new PptxGenJS();
   const pal  = pickPalette();
-  pptx.layout = 'LAYOUT_WIDE';  // 13.33 × 7.5 inches
+  pptx.layout = 'LAYOUT_WIDE';
 
-  // Slide background: near-white with a subtle left accent bar added per slide
-  pptx.defineSlideMaster({
-    title: 'PROF_MASTER',
-    background: { color: 'FAFAFA' },
-  });
+  // ── Dimensions ─────────────────────────────────────────────────
+  const SW = 13.33;   // slide width  (inches)
+  const SH = 7.5;    // slide height (inches)
 
-  // Group elements into slides: each H1/H2 starts a new slide
-  const slides = [];
-  let current = null;
+  // ── Colour scheme ──────────────────────────────────────────────
+  const DARK    = pal.heading;   // deep dark (e.g. '1B3A6B')
+  const ACCENT  = pal.accent;   // brand colour (e.g. 'B07D2A')
+  const HDRBG   = pal.headerBg; // light tint  (e.g. 'D6E4F0')
+  const WHITE   = 'FFFFFF';
+  const BODYTXT = '2D3748';     // near-black body text
+  const SUBTXT  = '718096';     // secondary / muted text
+  const SLIDEBG = 'F7F9FC';     // near-white slide background
 
-  for (const el of elements) {
-    if (el.type === 'h1' || el.type === 'h2') {
-      if (current) slides.push(current);
-      current = { title: el.text, isTitle: el.type === 'h1', content: [] };
-    } else if (el.type === 'h3') {
-      if (!current) current = { title: el.text, isTitle: false, content: [] };
-      else current.content.push({ type: 'heading', text: el.text });
-    } else if (el.type === 'paragraph') {
-      if (!current) current = { title: '', isTitle: false, content: [] };
-      current.content.push({ type: 'text', text: el.text });
-    } else if (el.type === 'bullets') {
-      if (!current) current = { title: '', isTitle: false, content: [] };
-      current.content.push({ type: 'bullets', items: el.items });
-    } else if (el.type === 'numbered') {
-      if (!current) current = { title: '', isTitle: false, content: [] };
-      current.content.push({ type: 'numbered', items: el.items });
-    } else if (el.type === 'table') {
-      if (!current) current = { title: '', isTitle: false, content: [] };
-      current.content.push({ type: 'table', rows: el.rows });
-    }
+  // ── Helpers ────────────────────────────────────────────────────
+  const R = pptx.ShapeType.rect;
+
+  function bg(s, color) {
+    s.addShape(R, { x:0, y:0, w:SW, h:SH, fill:{ color }, line:{ color } });
   }
-  if (current) slides.push(current);
-
-  if (slides.length === 0 && elements.length > 0) {
-    slides.push({
-      title: '',
-      isTitle: false,
-      content: elements.map(e => {
-        if (['paragraph','h1','h2','h3'].includes(e.type)) return { type: 'text', text: e.text };
-        if (e.type === 'bullets')  return { type: 'bullets',  items: e.items };
-        if (e.type === 'numbered') return { type: 'numbered', items: e.items };
-        if (e.type === 'table')    return { type: 'table',    rows: e.rows };
-        return null;
-      }).filter(Boolean),
+  function rect(s, x, y, w, h, color) {
+    s.addShape(R, { x, y, w, h, fill:{ color }, line:{ color } });
+  }
+  function footer(s, num) {
+    s.addText('Confidential', {
+      x:0.35, y:SH-0.38, w:3, h:0.28,
+      fontFace:'Calibri', fontSize:7.5, color:SUBTXT,
+    });
+    s.addText(String(num), {
+      x:SW-0.8, y:SH-0.38, w:0.65, h:0.28,
+      fontFace:'Calibri', fontSize:7.5, color:SUBTXT, align:'right',
     });
   }
 
-  slides.forEach((slide, slideIdx) => {
+  // ── Slide factories ────────────────────────────────────────────
+
+  /** Full-bleed dark title slide */
+  function makeTitleSlide(title, subtitle) {
     const s = pptx.addSlide();
+    bg(s, DARK);
+    // Thick left accent stripe
+    rect(s, 0, 0, 0.55, SH, ACCENT);
+    // Bottom bar
+    rect(s, 0.55, SH-1.0, SW-0.55, 1.0, '00000033'.slice(0,6)); // simplify — use slightly darker shade
+    rect(s, 0.55, SH-1.0, SW-0.55, 1.0, pal.body.length === 6 ? pal.body : DARK);
 
-    // Accent bar on left edge
-    s.addShape(pptx.ShapeType.rect, {
-      x: 0, y: 0, w: 0.08, h: 7.5,
-      fill: { color: pal.heading },
-      line: { color: pal.heading },
+    s.addText(title || 'Presentation', {
+      x:0.85, y:1.6, w:SW-1.2, h:2.4,
+      fontFace:'Calibri', fontSize:38, bold:true, color:WHITE,
+      valign:'middle', wrap:true,
     });
-
-    // Slide number (bottom right)
-    s.addText(`${slideIdx + 1}`, {
-      x: 12.5, y: 7.1, w: 0.7, h: 0.3,
-      fontSize: 7, color: 'AAAAAA', align: 'right',
-    });
-
-    // Title bar
-    if (slide.title) {
-      // Title background strip
-      s.addShape(pptx.ShapeType.rect, {
-        x: 0.2, y: 0.12, w: 13, h: slide.isTitle ? 1.3 : 0.9,
-        fill: { color: slide.isTitle ? pal.heading : pal.headerBg },
-        line: { color: slide.isTitle ? pal.heading : pal.headerBg },
-        rectRadius: 0.05,
+    // Divider rule
+    rect(s, 0.85, 4.15, 3.0, 0.06, ACCENT);
+    if (subtitle) {
+      s.addText(subtitle, {
+        x:0.85, y:4.35, w:SW-1.4, h:1.0,
+        fontFace:'Calibri', fontSize:18, color:'BBCCDD',
+        valign:'top', wrap:true,
       });
-      s.addText(slide.title, {
-        x: 0.3, y: slide.isTitle ? 0.18 : 0.15,
-        w: 12.5, h: slide.isTitle ? 1.1 : 0.75,
-        fontSize: slide.isTitle ? 26 : 20,
-        bold: true,
-        color: slide.isTitle ? 'FFFFFF' : pal.heading,
-        fontFace: 'Calibri',
-        valign: 'middle',
+    }
+    // Date
+    s.addText(new Date().toLocaleDateString('en-GB',{year:'numeric',month:'long'}), {
+      x:0.85, y:SH-0.6, w:4, h:0.35,
+      fontFace:'Calibri', fontSize:9, color:SUBTXT,
+    });
+  }
+
+  /** Two-column agenda slide */
+  function makeAgendaSlide(sectionTitles) {
+    const s = pptx.addSlide();
+    bg(s, SLIDEBG);
+    // Dark left panel (40% width)
+    rect(s, 0, 0, 5.2, SH, DARK);
+    rect(s, 0, 0, 0.55, SH, ACCENT);  // accent stripe
+
+    s.addText('Agenda', {
+      x:0.75, y:0.55, w:4.1, h:0.8,
+      fontFace:'Calibri', fontSize:26, bold:true, color:WHITE, valign:'bottom',
+    });
+    rect(s, 0.75, 1.45, 2.2, 0.06, ACCENT);
+
+    // Agenda items
+    sectionTitles.slice(0, 9).forEach((title, i) => {
+      const y = 1.7 + i * 0.58;
+      // Number box
+      rect(s, 0.75, y, 0.38, 0.38, ACCENT);
+      s.addText(String(i+1), {
+        x:0.75, y, w:0.38, h:0.38,
+        fontFace:'Calibri', fontSize:12, bold:true, color:WHITE,
+        align:'center', valign:'middle',
+      });
+      s.addText(title, {
+        x:1.22, y:y+0.03, w:3.7, h:0.35,
+        fontFace:'Calibri', fontSize:11.5, color:'D0DCF0', valign:'middle',
+      });
+    });
+
+    // Right panel: decorative label
+    s.addText('Contents Overview', {
+      x:5.5, y:2.8, w:7.5, h:0.9,
+      fontFace:'Calibri', fontSize:22, bold:true, color:DARK, valign:'middle',
+    });
+    rect(s, 5.5, 3.75, 4.0, 0.06, ACCENT);
+    s.addText('This document follows a structured consulting narrative from problem to recommendation.', {
+      x:5.5, y:3.9, w:7.3, h:1.2,
+      fontFace:'Calibri', fontSize:12, color:SUBTXT, valign:'top', wrap:true,
+    });
+
+    footer(s, 2);
+  }
+
+  /** Section divider — dark with watermark number */
+  function makeSectionSlide(title, num, slideNum) {
+    const s = pptx.addSlide();
+    bg(s, DARK);
+    rect(s, 0, 0, 0.55, SH, ACCENT);
+
+    // Huge watermark number
+    s.addText(String(num).padStart(2,'0'), {
+      x:6.5, y:0.2, w:6.5, h:5,
+      fontFace:'Calibri', fontSize:200, bold:true, color:WHITE,
+      transparency:88,  // near-invisible watermark
+      align:'right', valign:'top',
+    });
+    // Section label chip
+    s.addText(`SECTION ${String(num).padStart(2,'0')}`, {
+      x:0.85, y:2.0, w:6, h:0.45,
+      fontFace:'Calibri', fontSize:11, bold:true, color:ACCENT,
+      charSpacing: 4,
+    });
+    rect(s, 0.85, 2.5, 2.5, 0.06, ACCENT);
+    // Section title
+    s.addText(title, {
+      x:0.85, y:2.7, w:10, h:2.5,
+      fontFace:'Calibri', fontSize:32, bold:true, color:WHITE,
+      valign:'top', wrap:true,
+    });
+    footer(s, slideNum);
+  }
+
+  /** Standard content slide — dark header, light body */
+  function makeContentSlide(title, contentItems, slideNum) {
+    const s = pptx.addSlide();
+    bg(s, SLIDEBG);
+    rect(s, 0, 0, 0.12, SH, DARK);      // thin left bar
+    rect(s, 0.12, 0, SW-0.12, 1.1, DARK);  // title background
+    rect(s, 0.12, 1.1, SW-0.12, 0.07, ACCENT); // accent underline
+
+    if (title) {
+      s.addText(title, {
+        x:0.3, y:0.1, w:SW-0.5, h:0.9,
+        fontFace:'Calibri', fontSize:18, bold:true, color:WHITE,
+        valign:'middle', wrap:true,
       });
     }
 
-    const contentY = slide.title ? (slide.isTitle ? 1.6 : 1.2) : 0.3;
-    const contentH = 7.5 - contentY - 0.4;
+    const CY = 1.28;   // content area top
+    const CH = SH - CY - 0.5; // content area height
 
-    // Separate table items from text items so tables render with addTable
-    const textItems = [];
-    const tableItems = [];
+    const tables  = contentItems.filter(i => i.type === 'table');
+    const nonTbls = contentItems.filter(i => i.type !== 'table');
+    const hasBoth = tables.length > 0 && nonTbls.length > 0;
+    const textW   = hasBoth ? 6.0 : SW - 0.5;
+    const tblX    = hasBoth ? 6.3 : 0.25;
+    const tblW    = hasBoth ? SW - 6.55 : SW - 0.5;
 
-    for (const item of slide.content) {
-      if (item.type === 'table') {
-        // Flush accumulated text lines first
-        if (textItems.length > 0) {
-          s.addText([...textItems], {
-            x: 0.25, y: contentY, w: 12.8, h: contentH,
-            fontFace: 'Calibri', fontSize: 10,
-            valign: 'top', wrap: true,
-          });
-          textItems.length = 0;
+    // Text column
+    if (nonTbls.length > 0) {
+      const lines = [];
+      for (const item of nonTbls) {
+        if (item.type === 'heading') {
+          lines.push({ text: item.text, options: {
+            fontFace:'Calibri', fontSize:13, bold:true, color:DARK,
+            paraSpaceBefore:8, paraSpaceAfter:3, breakLine:true,
+          }});
+        } else if (item.type === 'text') {
+          lines.push({ text: item.text, options: {
+            fontFace:'Calibri', fontSize:11, color:BODYTXT,
+            paraSpaceAfter:4, breakLine:true,
+          }});
+        } else if (item.type === 'bullets') {
+          item.items.forEach(b => lines.push({ text: b, options: {
+            fontFace:'Calibri', fontSize:11, color:BODYTXT,
+            bullet:{ type:'bullet', characterCode:'25BA', color:ACCENT },
+            paraSpaceAfter:5, indentLevel:0, breakLine:true,
+          }}));
+        } else if (item.type === 'numbered') {
+          item.items.forEach((b, idx) => lines.push({ text: `${idx+1}.  ${b}`, options: {
+            fontFace:'Calibri', fontSize:11, color:BODYTXT,
+            paraSpaceAfter:5, breakLine:true,
+          }}));
         }
-        tableItems.push(item);
-      } else if (item.type === 'heading') {
-        textItems.push({ text: item.text + '\n', options: { fontSize: 13, bold: true, color: pal.accent, fontFace: 'Calibri' } });
-      } else if (item.type === 'text') {
-        textItems.push({ text: item.text + '\n', options: { fontSize: 10, color: '333333', fontFace: 'Calibri' } });
-      } else if (item.type === 'bullets') {
-        item.items.forEach(b => textItems.push({
-          text: b + '\n',
-          options: { fontSize: 10, color: '333333', fontFace: 'Calibri', bullet: { type: 'bullet', characterCode: '25CF', color: pal.accent } },
-        }));
-      } else if (item.type === 'numbered') {
-        item.items.forEach((b, i) => textItems.push({
-          text: `${i + 1}. ${b}\n`,
-          options: { fontSize: 10, color: '333333', fontFace: 'Calibri' },
-        }));
+      }
+      if (lines.length) {
+        s.addText(lines, {
+          x:0.25, y:CY, w:textW, h:CH,
+          fontFace:'Calibri', fontSize:11, valign:'top', wrap:true,
+        });
       }
     }
 
-    // Flush remaining text lines
-    if (textItems.length > 0) {
-      s.addText(textItems, {
-        x: 0.25, y: contentY, w: 12.8, h: contentH,
-        fontFace: 'Calibri', fontSize: 10,
-        valign: 'top', wrap: true,
-      });
-    }
-
-    // Render tables using pptxgenjs addTable
-    let tableY = contentY;
-    tableItems.forEach(item => {
+    // Table column
+    let ty = CY;
+    tables.forEach(item => {
+      const cols = item.rows[0] ? item.rows[0].length : 1;
+      const cw   = tblW / cols;
       const rows = item.rows.map((row, ri) =>
         row.map(cell => ({
           text: cell,
           options: {
-            fontFace: 'Calibri',
-            fontSize: 9,
-            bold: ri === 0,
-            color: ri === 0 ? pal.heading : '333333',
-            fill: ri === 0 ? pal.headerBg : (ri % 2 === 0 ? 'F8F8F8' : 'FFFFFF'),
-            align: 'left',
-            valign: 'middle',
-            margin: [3, 6, 3, 6],
-            border: [
-              { type: 'solid', pt: 0.5, color: 'DDDDDD' },
-              { type: 'solid', pt: 0.5, color: 'DDDDDD' },
-              { type: 'solid', pt: 0.5, color: 'DDDDDD' },
-              { type: 'solid', pt: 0.5, color: 'DDDDDD' },
+            fontFace:'Calibri', fontSize:9, bold:ri===0,
+            color: ri===0 ? WHITE : BODYTXT,
+            fill:  ri===0 ? DARK : (ri%2===0 ? HDRBG : WHITE),
+            align:'left', valign:'middle',
+            margin:[3,6,3,6],
+            border:[
+              {type:'solid',pt:0.5,color:'CCCCCC'},
+              {type:'solid',pt:0.5,color:'CCCCCC'},
+              {type:'solid',pt:0.5,color:'CCCCCC'},
+              {type:'solid',pt:0.5,color:'CCCCCC'},
             ],
           },
         }))
       );
-      s.addTable(rows, {
-        x: 0.25, y: tableY, w: 12.8,
-        colW: Array(item.rows[0] ? item.rows[0].length : 1).fill(12.8 / (item.rows[0] ? item.rows[0].length : 1)),
-      });
-      tableY += item.rows.length * 0.32 + 0.2;
+      s.addTable(rows, { x:tblX, y:ty, w:tblW, colW:Array(cols).fill(cw), rowH:0.28 });
+      ty += item.rows.length * 0.3 + 0.25;
     });
-  });
+
+    footer(s, slideNum);
+  }
+
+  // ── Parse elements → sections → slides ────────────────────────
+  // H1 #1 = presentation title; subsequent H1s = section dividers
+  // H2 = individual slide; H3 = sub-heading within a slide
+  let presTitle    = '';
+  let presSubtitle = '';
+  let firstH1      = false;
+  const sections   = [];
+  let curSection   = null;
+  let curSlide     = null;
+
+  function flushSlide() {
+    if (!curSlide) return;
+    if (!curSection) curSection = { title:'', slides:[] };
+    curSection.slides.push(curSlide);
+    curSlide = null;
+  }
+  function flushSection() {
+    flushSlide();
+    if (curSection) { sections.push(curSection); curSection = null; }
+  }
+  function ensureSlide() {
+    if (!curSlide) {
+      if (!curSection) curSection = { title:'', slides:[] };
+      curSlide = { title:'', content:[] };
+    }
+  }
+
+  for (const el of elements) {
+    if (el.type === 'h1') {
+      if (!firstH1) {
+        firstH1 = true;
+        presTitle = el.text;
+      } else {
+        flushSection();
+        curSection = { title: el.text, slides:[] };
+      }
+    } else if (el.type === 'h2') {
+      flushSlide();
+      if (!curSection) curSection = { title:'', slides:[] };
+      curSlide = { title: el.text, content:[] };
+    } else if (el.type === 'h3') {
+      if (!curSlide) { ensureSlide(); curSlide.title = el.text; }
+      else curSlide.content.push({ type:'heading', text: el.text });
+    } else if (el.type === 'paragraph') {
+      if (!firstH1) { presSubtitle = el.text; firstH1 = true; }
+      else { ensureSlide(); curSlide.content.push({ type:'text', text: el.text }); }
+    } else if (el.type === 'bullets')  { ensureSlide(); curSlide.content.push({ type:'bullets',  items: el.items }); }
+    else if (el.type === 'numbered')   { ensureSlide(); curSlide.content.push({ type:'numbered', items: el.items }); }
+    else if (el.type === 'table')      { ensureSlide(); curSlide.content.push({ type:'table',    rows:  el.rows  }); }
+    else if (el.type === 'code')       { ensureSlide(); curSlide.content.push({ type:'text',     text:  el.text  }); }
+  }
+  flushSection();
+
+  // Fall-through: if no sections parsed, treat whole content as one section
+  if (sections.length === 0) {
+    sections.push({
+      title:'',
+      slides:[{ title:'', content: elements.map(e => {
+        if (['h1','h2','h3','paragraph'].includes(e.type)) return { type:'text', text: e.text };
+        if (e.type === 'bullets')  return { type:'bullets',  items: e.items };
+        if (e.type === 'numbered') return { type:'numbered', items: e.items };
+        if (e.type === 'table')    return { type:'table',    rows: e.rows };
+        return null;
+      }).filter(Boolean) }],
+    });
+  }
+
+  // ── Split slides that exceed MAX_BULLETS_PER_SLIDE ─────────────
+  const MAX = 7;
+  function splitSlide(slide) {
+    const out = [];
+    let batch = [], count = 0;
+    for (const item of slide.content) {
+      const w = (item.type === 'bullets' || item.type === 'numbered') ? item.items.length : 2;
+      if (count > 0 && count + w > MAX && item.type !== 'table') {
+        out.push({ title: slide.title + (out.length ? ' (cont.)' : ''), content: batch });
+        batch = []; count = 0;
+      }
+      batch.push(item); count += w;
+    }
+    if (batch.length) out.push({ title: slide.title + (out.length ? ' (cont.)' : ''), content: batch });
+    return out.length ? out : [slide];
+  }
+
+  // ── Render ────────────────────────────────────────────────────
+  let slideNum = 1;
+  makeTitleSlide(presTitle, presSubtitle);
+
+  const secTitles = sections.map(s => s.title).filter(Boolean);
+  if (secTitles.length > 1) {
+    makeAgendaSlide(secTitles);
+    slideNum = 2;
+  }
+
+  let secNum = 0;
+  for (const section of sections) {
+    slideNum++;
+    if (section.title) { secNum++; makeSectionSlide(section.title, secNum, slideNum); slideNum++; }
+    for (const raw of section.slides) {
+      for (const slide of splitSlide(raw)) {
+        makeContentSlide(slide.title, slide.content, slideNum);
+        slideNum++;
+      }
+    }
+  }
 
   return pptx.write({ outputType: 'nodebuffer' });
 }
