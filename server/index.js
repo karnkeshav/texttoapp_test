@@ -3,9 +3,10 @@ const express = require('express');
 const session = require('express-session');
 const path = require('path');
 
-const authRoutes   = require('./routes/auth');
-const chatRoutes   = require('./routes/chat');
-const githubRoutes = require('./routes/github');
+const authRoutes    = require('./routes/auth');
+const chatRoutes    = require('./routes/chat');
+const githubRoutes  = require('./routes/github');
+const convertRoutes = require('./routes/convert');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,6 +34,7 @@ app.use(express.static(path.join(__dirname, '..', 'public')));
 // ── API / Auth Routes ─────────────────────────────────────────────
 app.use('/auth', authRoutes);
 app.use('/api', chatRoutes);
+app.use('/api', convertRoutes);
 app.use('/api/github', githubRoutes);
 
 // ── Telemetry receiver — in-memory deduplication cache ───────────

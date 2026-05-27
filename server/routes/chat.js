@@ -124,12 +124,17 @@ function classifyTopLevelIntent(message) {
 }
 
 // ── System instructions for non-build intents ─────────────────────
-const SYS_CONVERSION = `You are Ready4Launch's document assistant. The user wants content converted to or formatted for a specific file type (Word, Excel, CSV, JSON, PPT, PDF, etc.).
-Generate the content they need, clearly structured in Markdown so it is easy to read and copy.
-Use headings, bullet points, tables and code blocks where appropriate for the target format.
-At the end of your response include this exact line:
-📄 *File download (Word / Excel / PPT) is coming in the next update — copy the content above for now.*
-Do NOT build apps or websites. Do NOT output REPO_NAME or HTML code blocks.`;
+const SYS_CONVERSION = `You are Ready4Launch's document assistant. Generate rich, complete content for the user's requested file format.
+
+Structure your output in Markdown, optimised for the target format:
+
+• **Word / PDF**: Use # headings, paragraphs, bullet lists (- item), numbered lists (1. item), and Markdown tables (| col | col |).
+• **Excel / CSV / spreadsheet**: Focus on Markdown tables (| header | header |\\n| val | val |). Each logical dataset = one table. Add a ## heading above each table to name the sheet.
+• **PowerPoint / presentation**: Start each slide with # Slide Title. Use bullet points for slide content. Keep each section focused — one idea per slide.
+• **JSON**: Use tables to represent arrays of objects. Use headings to define top-level keys.
+
+Be thorough and complete — generate all the content the user needs, not just an outline.
+Do NOT add disclaimers about file generation. Do NOT output REPO_NAME or \`\`\`html blocks.`;
 
 const SYS_REASONING = `You are Ready4Launch's reasoning assistant. Answer the user's question with clear logical steps.
 Show your working explicitly. Use plain text, Markdown tables, or numbered steps.
@@ -140,6 +145,17 @@ const SYS_CHAT = `You are Ready4Launch — a smart AI assistant that can build w
 Answer the user helpfully and conversationally. Be concise unless depth is asked for.
 If the user wants to build something, let them know they can describe an app and you will build and deploy it for free.
 Do NOT output REPO_NAME or HTML code blocks unless explicitly building an app.`;
+
+function detectConversionFormat(message) {
+  const m = message.toLowerCase();
+  if (/\b(word|docx?)\b/.test(m))                        return 'docx';
+  if (/\b(excel|xlsx?|spreadsheet)\b/.test(m))           return 'xlsx';
+  if (/\b(powerpoint|pptx?|presentation|slides?)\b/.test(m)) return 'pptx';
+  if (/\bpdf\b/.test(m))                                 return 'pdf';
+  if (/\bcsv\b/.test(m))                                 return 'csv';
+  if (/\bjson\b/.test(m))                                return 'json';
+  return 'docx'; // default
+}
 
 function interceptFramework(message) {
   const match = message.match(FRAMEWORK_RE);
@@ -309,7 +325,14 @@ Be helpful and concise. Do NOT output REPO_NAME or HTML code blocks unless the u
         });
 
         req.session.chatHistory.push({ role: 'assistant', content: responseText });
-        sendEvent('done', { text: responseText });
+        // Store the detected format on the session so follow-up turns can use it
+        if (intent === 'conversion') {
+          req.session.conversionFormat = detectConversionFormat(trimmedMessage);
+        }
+        const donePayload = intent === 'conversion'
+          ? { text: responseText, downloadable: true, detectedFormat: req.session.conversionFormat }
+          : { text: responseText };
+        sendEvent('done', donePayload);
         return res.end();
       }
       // intent === 'build' → fall through to the state machine below
@@ -321,6 +344,14 @@ Be helpful and concise. Do NOT output REPO_NAME or HTML code blocks unless the u
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
       const sysMap = { conversion: SYS_CONVERSION, reasoning: SYS_REASONING, chat: SYS_CHAT };
       const sys = sysMap[req.session.chatPhase] || SYS_CHAT;
+
+      // Update format if user mentions a new one (e.g. "now give me the Excel version")
+      if (req.session.chatPhase === 'conversion') {
+        const newFmt = detectConversionFormat(trimmedMessage);
+        if (newFmt !== 'docx' || /\bdocx?\b/i.test(trimmedMessage)) {
+          req.session.conversionFormat = newFmt;
+        }
+      }
 
       sendEvent('status', { message: 'Thinking…' });
 
@@ -342,7 +373,10 @@ Be helpful and concise. Do NOT output REPO_NAME or HTML code blocks unless the u
       });
 
       req.session.chatHistory.push({ role: 'assistant', content: responseText });
-      sendEvent('done', { text: responseText });
+      const followUpPayload = req.session.chatPhase === 'conversion'
+        ? { text: responseText, downloadable: true, detectedFormat: req.session.conversionFormat || 'docx' }
+        : { text: responseText };
+      sendEvent('done', followUpPayload);
       return res.end();
     }
 

@@ -336,9 +336,11 @@ async function sendMessage() {
           } else if (event.type === 'done') {
             aiText = event.text || aiText;
             updateAIBubble(aiMsgId, aiText);
-            // Carry edit context for post-stream handling
+            // Carry context for post-stream handling
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
+            } else if (event.downloadable) {
+              finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx' };
             } else {
               finalText = aiText;
             }
@@ -349,10 +351,12 @@ async function sendMessage() {
       }
     }
 
-    // Post-stream: deploy button (new app) or push-update button (edit mode)
+    // Post-stream: deploy button / push-update / download options
     if (finalText !== null) {
       if (finalText && typeof finalText === 'object' && finalText.editMode) {
         showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo, finalText.editBranch);
+      } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
+        showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat);
       } else {
         checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
       }
@@ -480,6 +484,95 @@ function checkForCode(text) {
   if (jsMatch)  files.push({ path: 'script.js',  content: jsMatch[1].trim() });
 
   showDeployPrompt(repoName, files);
+}
+
+// ── Download options card (conversion mode) ──────────────────────
+const FORMAT_LABELS = {
+  docx: { label: 'Word',        icon: '📝', ext: 'docx' },
+  xlsx: { label: 'Excel',       icon: '📊', ext: 'xlsx' },
+  pptx: { label: 'PowerPoint',  icon: '📑', ext: 'pptx' },
+  pdf:  { label: 'PDF',         icon: '📄', ext: 'pdf'  },
+  csv:  { label: 'CSV',         icon: '📋', ext: 'csv'  },
+  json: { label: 'JSON',        icon: '🔧', ext: 'json' },
+};
+
+function showDownloadOptions(aiMsgId, content, detectedFormat) {
+  const bubble = document.getElementById(`${aiMsgId}-bubble`);
+  if (!bubble) return;
+
+  // Build format buttons — detected format first and highlighted
+  const allFormats = Object.entries(FORMAT_LABELS);
+  const ordered = [
+    ...allFormats.filter(([k]) => k === detectedFormat),
+    ...allFormats.filter(([k]) => k !== detectedFormat),
+  ];
+
+  const buttons = ordered.map(([fmt, { label, icon }]) => {
+    const isDefault = fmt === detectedFormat;
+    return `<button
+      class="dl-format-btn${isDefault ? ' dl-format-btn--primary' : ''}"
+      onclick="downloadAs(this, ${JSON.stringify(fmt)}, ${JSON.stringify(content)})"
+      title="Download as ${label}"
+    >${icon} ${label}</button>`;
+  }).join('');
+
+  const card = document.createElement('div');
+  card.className = 'download-card';
+  card.innerHTML = `
+    <div class="download-card-label">⬇️ Download as</div>
+    <div class="download-format-row">${buttons}</div>
+    <div class="download-card-status" id="dl-status-${aiMsgId}"></div>
+  `;
+
+  bubble.appendChild(card);
+  scrollToBottom();
+}
+
+async function downloadAs(btn, format, content) {
+  const aiMsgId = btn.closest('.msg-bubble')?.closest('.msg-body')?.previousElementSibling
+    ? btn.closest('[id$="-bubble"]')?.id?.replace('-bubble', '')
+    : null;
+  const statusEl = aiMsgId ? document.getElementById(`dl-status-${aiMsgId}`) : null;
+
+  // Generate a filename from the first heading or "document"
+  const headingMatch = content.match(/^#+ (.+)$/m);
+  const filename = headingMatch ? headingMatch[1].replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 60) : 'document';
+
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = `Generating ${FORMAT_LABELS[format]?.label || format} file…`;
+
+  try {
+    const res = await fetch('/api/convert-file', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content, format, filename }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(err.error || `HTTP ${res.status}`);
+    }
+
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${filename}.${format}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    if (statusEl) {
+      statusEl.textContent = `✅ ${FORMAT_LABELS[format]?.label || format} downloaded!`;
+      setTimeout(() => { if (statusEl) statusEl.textContent = ''; }, 4000);
+    }
+  } catch (err) {
+    if (statusEl) statusEl.textContent = `⚠️ ${err.message}`;
+    console.error('[downloadAs]', err);
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 // ── Push-update card (edit mode) ─────────────────────────────────

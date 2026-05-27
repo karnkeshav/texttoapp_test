@@ -875,6 +875,57 @@ body {
 .push-success h4 { color: #34d399; font-weight: 700; margin-bottom: 8px; }
 .push-success a { color: var(--blue-light); }
 
+/* Download card (conversion mode) */
+.download-card {
+  margin-top: 16px;
+  padding: 14px 16px;
+  background: rgba(124,58,237,0.06);
+  border: 1px solid rgba(124,58,237,0.2);
+  border-radius: 12px;
+}
+.download-card-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-3);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+}
+.download-format-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.dl-format-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-2);
+  font-size: 13px;
+  font-family: var(--font);
+  cursor: pointer;
+  transition: all 0.18s;
+}
+.dl-format-btn:hover { border-color: var(--purple-light); color: var(--purple-light); background: rgba(124,58,237,0.06); }
+.dl-format-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.dl-format-btn--primary {
+  background: var(--grad-main);
+  border-color: transparent;
+  color: #fff;
+  font-weight: 600;
+}
+.dl-format-btn--primary:hover { opacity: 0.9; color: #fff; }
+.download-card-status {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+  min-height: 18px;
+}
+
 /* Input area */
 .chat-input-area {
   padding: 20px 24px;
