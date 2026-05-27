@@ -379,44 +379,6 @@ async function pooledStream({ contents, config, apiKey, systemInstruction, onChu
   throw err;
 }
 
-// ── Public: Imagen image generation ──────────────────────────────
-/**
- * Generates an image using Google Imagen 3 via the new SDK.
- * Tries fast model first (lower latency), falls back to full model.
- * @param {string} prompt   - Natural language image description
- * @param {string} apiKey
- * @returns {Promise<{base64: string, mimeType: string}>}
- */
-async function generateImage(prompt, apiKey) {
-  const imagenModels = [
-    'imagen-3.0-fast-generate-001',  // faster, same quality on most prompts
-    'imagen-3.0-generate-004',        // full quality fallback
-  ];
-  const ai = new GoogleGenAI({ apiKey });
-
-  for (const model of imagenModels) {
-    try {
-      const response = await ai.models.generateImages({
-        model,
-        prompt,
-        config: { numberOfImages: 1, outputMimeType: 'image/jpeg' },
-      });
-      const imageBytes = response.generatedImages?.[0]?.image?.imageBytes;
-      if (imageBytes) {
-        console.log(`[GeminiPool] generateImage ✅ ${model}`);
-        return { base64: imageBytes, mimeType: 'image/jpeg' };
-      }
-    } catch (err) {
-      console.warn(`[GeminiPool] generateImage failed for ${model}:`, err.message);
-    }
-  }
-
-  throw new Error(
-    'Image generation failed — Imagen returned no result. ' +
-    'Your API key may need Imagen access enabled in Google AI Studio.'
-  );
-}
-
 // ── Pool status (for diagnose endpoint) ──────────────────────────
 function poolStatus() {
   return POOL_CONFIG.map((slot, i) => ({
@@ -433,4 +395,4 @@ function poolStatus() {
   }));
 }
 
-module.exports = { pooledGenerate, pooledStream, poolStatus, generateImage };
+module.exports = { pooledGenerate, pooledStream, poolStatus };

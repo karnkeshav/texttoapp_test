@@ -339,8 +339,6 @@ async function sendMessage() {
             // Carry context for post-stream handling
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
-            } else if (event.imageGenerated && event.imageData) {
-              finalText = { text: aiText, imageGenerated: true, imageData: event.imageData };
             } else if (event.downloadable) {
               finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx' };
             } else {
@@ -357,8 +355,6 @@ async function sendMessage() {
     if (finalText !== null) {
       if (finalText && typeof finalText === 'object' && finalText.editMode) {
         showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo, finalText.editBranch);
-      } else if (finalText && typeof finalText === 'object' && finalText.imageGenerated) {
-        showGeneratedImage(aiMsgId, finalText.imageData);
       } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
         showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat);
       } else {
@@ -590,36 +586,6 @@ async function downloadAs(btn, format, content, aiMsgId) {
   } finally {
     btn.disabled = false;
   }
-}
-
-// ── Generated image display ───────────────────────────────────────
-function showGeneratedImage(aiMsgId, imageData) {
-  const bubble = document.getElementById(`${aiMsgId}-bubble`);
-  if (!bubble || !imageData) return;
-
-  const src = `data:${imageData.mimeType};base64,${imageData.base64}`;
-
-  const wrap = document.createElement('div');
-  wrap.className = 'generated-img-wrap';
-  wrap.innerHTML = `
-    <img src="${src}" alt="Generated image" class="generated-img" />
-    <div class="generated-img-actions">
-      <button class="dl-format-btn dl-format-btn--primary" onclick="downloadGeneratedImage(this, ${JSON.stringify(src)})">
-        ⬇ Download image
-      </button>
-    </div>`;
-
-  bubble.appendChild(wrap);
-  scrollToBottom();
-}
-
-function downloadGeneratedImage(btn, src) {
-  const a = document.createElement('a');
-  a.href = src;
-  a.download = `imagen-${Date.now()}.jpg`;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
 }
 
 // ── Push-update card (edit mode) ─────────────────────────────────
