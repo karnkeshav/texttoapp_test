@@ -45,14 +45,17 @@ function pinCDNVersions(html) {
 // ── Runtime telemetry injection ───────────────────────────────────
 // Injects a silent window.onerror handler into every deployed HTML file.
 // Errors are posted to /api/telemetry/report on the Ready4Launch backend.
+// Skipped entirely when BACKEND_ORIGIN is not configured (avoids injecting
+// a broken URL into user-facing apps).
 function injectTelemetry(html, backendOrigin) {
-  const origin = backendOrigin || 'https://your-texttoapp-backend.onrender.com';
+  if (!backendOrigin) return html; // no origin configured — skip injection
+
   const snippet = `
   <!-- Ready4Launch runtime monitor -->
   <script>
     window.onerror = function(msg, src, line, col, err) {
       try {
-        fetch('${origin}/api/telemetry/report', {
+        fetch('${backendOrigin}/api/telemetry/report', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

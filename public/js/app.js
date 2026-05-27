@@ -814,17 +814,19 @@ async function deployToGitHub(fileId, btn) {
     if (data.success) {
       card.innerHTML = `
         <div class="push-success">
-          <h4>🎉 Your app is live!</h4>
+          <h4>🎉 Deployed to GitHub Pages!</h4>
           <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-            A new repository was created and GitHub Pages is deploying your site. It'll be live within ~60 seconds.
+            Your code is pushed and GitHub Pages is building the site.
+            The live URL below is usually ready within <strong>2–5 minutes</strong> for a first deployment —
+            if it shows a 404, wait a moment and refresh.
           </p>
           <p style="margin-bottom:8px;">
             🔗 <strong>Live URL:</strong>
-            <a href="${data.pagesUrl}" target="_blank" style="color:var(--purple-light);">${data.pagesUrl}</a>
+            <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
           </p>
           <p style="margin-bottom:0;">
             📁 <strong>Repository:</strong>
-            <a href="${data.repoUrl}" target="_blank" style="color:var(--purple-light);">${data.repoUrl}</a>
+            <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
           </p>
         </div>
       `;
