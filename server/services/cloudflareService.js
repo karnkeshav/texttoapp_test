@@ -135,13 +135,19 @@ async function deployToCloudflare(files, projectNameHint) {
     }
   }
 
-  // Build multipart form — omit `filename` on manifest to match CF spec exactly
+  // Build multipart form.
+  // CF Pages Direct Upload v2 requires:
+  //   - manifest  → no filename, contentType: application/json
+  //   - each file → MUST include filename in Content-Disposition so CF knows
+  //                 how to classify and serve it (omitting filename causes blank pages)
   const form = new FormData();
   form.append('manifest', Buffer.from(JSON.stringify(manifest)), {
     contentType: 'application/json',
   });
   for (const [hash, { buf, path: fp }] of hashToFile) {
+    const basename = fp.replace(/^\//, ''); // strip leading slash for filename
     form.append(hash, buf, {
+      filename:    basename,
       contentType: guessMime(fp),
     });
   }
@@ -164,13 +170,31 @@ async function deployToCloudflare(files, projectNameHint) {
     throw new Error(`Deployment failed (${err.response?.status ?? 'network'}): ${cfMsg}`);
   }
 
-  const deployment = res.data?.result || {};
+  // Validate the response — CF can return 200 but with success:false or a failed stage
+  if (res.data?.success === false) {
+    const cfMsg = res.data?.errors?.[0]?.message || 'Unknown error';
+    console.error('[CF] Deployment API reported failure:', JSON.stringify(res.data).slice(0, 400));
+    throw new Error(`Deployment rejected by server: ${cfMsg}`);
+  }
+
+  const deployment  = res.data?.result || {};
+  const stageStatus = deployment.latest_stage?.status;
+
+  if (stageStatus && stageStatus !== 'success') {
+    console.error(`[CF] Deployment stage status: ${stageStatus}`, JSON.stringify(deployment.latest_stage));
+    if (stageStatus === 'failure') {
+      throw new Error(`Deployment failed during "${deployment.latest_stage?.name}" stage. Check Cloudflare dashboard.`);
+    }
+    // 'active' / 'queued' — still processing (shouldn't happen for direct upload, but log it)
+    console.warn(`[CF] Deployment stage "${stageStatus}" — may still be processing`);
+  }
+
   // Always use the canonical project URL — deployment.url is an internal
   // hash-prefixed preview URL (e.g. de308211.project.pages.dev) that Chrome
   // refuses to navigate to and that doesn't represent the live site.
   const liveUrl = `https://${projectName}.pages.dev`;
 
-  console.log(`[CF] Deployed → ${liveUrl}  (deployId: ${deployment.id}, rawUrl: ${deployment.url})`);
+  console.log(`[CF] Deployed → ${liveUrl}  (id: ${deployment.id}, stage: ${stageStatus ?? 'unknown'}, rawUrl: ${deployment.url})`);
   return {
     url:          liveUrl,
     projectName,

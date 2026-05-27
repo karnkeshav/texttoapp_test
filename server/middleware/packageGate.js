@@ -15,6 +15,7 @@ const {
   getPackageStatus,
   checkAndIncrementUsage,
   recordSession,
+  OWNER_EMAILS,
 } = require('../services/firestoreService');
 
 /**
@@ -57,6 +58,12 @@ async function checkGate(req, section, newConv) {
       error:   'not_authenticated',
       message: 'Please sign in to use Ready4Launch.',
     };
+  }
+
+  // ── 1b. Owner accounts — bypass all restrictions ─────────────────
+  const userEmail = req.session?.googleUser?.email || req.session?.user?.email || null;
+  if (userEmail && OWNER_EMAILS.has(userEmail)) {
+    return { ok: true, uid, owner: true };
   }
 
   // ── 2. Read package ──────────────────────────────────────────────

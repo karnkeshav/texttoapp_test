@@ -16,25 +16,42 @@
  *   pro     — paid, unlimited, 30 days
  */
 
+// ── Owner / admin accounts — full unrestricted access ────────────
+// These email addresses bypass the package gate entirely.
+const OWNER_EMAILS = new Set([
+  'keshav.karn@gmail.com',
+  'keshav1karn@gmail.com',
+  'ready4urexam@gmail.com',
+]);
+
 // ── Package definitions ───────────────────────────────────────────
 const PACKAGES = {
-  demo: {
-    name:                  'Demo',
-    daysValid:             5,
+  test_drive: {
+    name:                    '5 Day Test Drive',
+    daysValid:               5,
     promptsPerSectionPerDay: 2,
-    unlimited:             false,
+    unlimited:               false,
+    priceINR:                1999,
+    priceLabel:              '₹1,999',
+    priceSub:                '5-day access',
   },
-  starter: {
-    name:                  'Starter',
-    daysValid:             30,
+  standard: {
+    name:                    'Standard Builder',
+    daysValid:               30,
     promptsPerSectionPerDay: 20,
-    unlimited:             false,
+    unlimited:               false,
+    priceINR:                4999,
+    priceLabel:              '₹4,999',
+    priceSub:                'per month',
   },
-  pro: {
-    name:                  'Pro',
-    daysValid:             30,
+  professional: {
+    name:                    'Professional Builder',
+    daysValid:               30,
     promptsPerSectionPerDay: null,
-    unlimited:             true,
+    unlimited:               true,
+    priceINR:                5099,
+    priceLabel:              '₹5,099 + ₹99/mo',
+    priceSub:                'setup fee, then ₹99/month',
   },
 };
 
@@ -292,5 +309,5 @@ async function getUserProfile(uid) {
 module.exports = {
   upsertUser, linkGitHub,
   setPackage, getPackageStatus, checkAndIncrementUsage, recordSession, getUserProfile,
-  PACKAGES,
+  PACKAGES, OWNER_EMAILS,
 };
