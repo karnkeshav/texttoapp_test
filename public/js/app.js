@@ -173,46 +173,134 @@ function updateWelcomeForMode() {
 }
 
 
+// ── Prompt bar visibility ────────────────────────────────────────
+function hidePromptBar() {
+  const bar = document.getElementById('chatInputArea');
+  if (bar) bar.style.display = 'none';
+}
+function showPromptBar() {
+  const bar = document.getElementById('chatInputArea');
+  if (bar) bar.style.display = '';
+}
+
 // ── Welcome mode cards ────────────────────────────────────────────
+// Canonical 4-card HTML (used both on first load and after "← Back")
+function _welcomeCardsInnerHTML() {
+  return `
+    <div class="welcome-card" onclick="startWithMode('build')">
+      <div class="welcome-card-icon">🏗️</div>
+      <div class="welcome-card-title">Build an App</div>
+      <div class="welcome-card-desc">Turn any idea into a full web app in minutes — just describe it in plain English</div>
+    </div>
+    <div class="welcome-card" onclick="startWithMode('convert')">
+      <div class="welcome-card-icon">📄</div>
+      <div class="welcome-card-title">Convert a Document</div>
+      <div class="welcome-card-desc">Export content to Word, Excel, PowerPoint or PDF instantly</div>
+    </div>
+    <div class="welcome-card" onclick="startWithMode('chat')">
+      <div class="welcome-card-icon">💬</div>
+      <div class="welcome-card-title">Chat &amp; Analyse</div>
+      <div class="welcome-card-desc">Ask anything, analyse data, research topics or get expert answers</div>
+    </div>
+    <div class="welcome-card" onclick="startWithMode('vision')">
+      <div class="welcome-card-icon">🖼️</div>
+      <div class="welcome-card-title">Analyse an Image</div>
+      <div class="welcome-card-desc">Upload any photo or diagram for instant AI-powered visual analysis</div>
+    </div>`;
+}
+
 function showWelcomeCards() {
   if (!_userAuthenticated) return;
   const cards = document.getElementById('welcomeCards');
-  if (cards) cards.style.display = 'grid';
+  if (!cards) return;
+  cards.innerHTML = _welcomeCardsInnerHTML();
+  cards.style.display = 'grid';
+  hidePromptBar();
 }
 
 /**
- * Pre-fill the input with a starter prompt for the chosen mode,
- * then focus it so the user just types and hits send.
+ * Called when a mode card is tapped.
+ * 'build' → show deploy-method sub-options first.
+ * Others   → reveal prompt bar immediately with an appropriate placeholder.
  */
 function startWithMode(mode) {
-  const input = document.getElementById('chatInput');
-  if (!input) return;
+  if (mode === 'build') {
+    _showBuildDeployOptions();
+    return;
+  }
 
-  const starters = {
-    build:   '',
-    convert: 'Convert this to ',
-    chat:    '',
-    vision:  '',
-  };
+  // Hide the cards, show the input bar
+  const cards = document.getElementById('welcomeCards');
+  if (cards) cards.style.display = 'none';
+  showPromptBar();
 
   const placeholders = {
-    build:   "Describe the app you want to build… (e.g. 'A recipe website with search and dark theme')",
-    convert: "Describe what to create — e.g. 'Convert my notes to a Word doc' or 'Make a monthly sales Excel sheet'",
-    chat:    "Ask me anything — a question, analysis, research, or advice…",
-    vision:  "Describe what you'd like to know about the image (then attach it with the 📎 button)",
+    convert: "Describe what to create — e.g. 'Convert my notes to a Word doc' or 'Make an Excel sales sheet'",
+    chat:    'Ask me anything — a question, analysis, research, or expert advice…',
+    vision:  "What would you like to know about the image? (attach it with the 📎 button)",
   };
 
-  // If the mode has a starter prefix, set it; otherwise leave empty for natural typing
-  if (starters[mode]) {
-    input.value = starters[mode];
+  const input = document.getElementById('chatInput');
+  if (input) {
+    input.placeholder = placeholders[mode] || 'Describe what you want…';
+    input.value = '';
+    input.focus();
+    autoResize(input);
   }
-  input.placeholder = placeholders[mode] || input.placeholder;
-  input.focus();
-  autoResize(input);
 
-  // For vision mode, open the file picker immediately
-  if (mode === 'vision') {
-    openAttachPicker();
+  if (mode === 'vision') openAttachPicker();
+}
+
+/**
+ * Sub-options shown when the user picks "Build an App".
+ * Lets them choose Instant Publish (Cloudflare) or GitHub Pages.
+ */
+function _showBuildDeployOptions() {
+  const cards = document.getElementById('welcomeCards');
+  if (!cards) return;
+
+  const ghConnected = (deployMode === 'github');
+
+  cards.innerHTML = `
+    <div style="grid-column:1/-1;display:flex;align-items:center;gap:10px;margin-bottom:2px;">
+      <button onclick="showWelcomeCards()" style="background:none;border:none;color:var(--text-3);font-size:13px;cursor:pointer;padding:2px 0;font-family:var(--font);display:flex;align-items:center;gap:4px;transition:color 0.2s;" onmouseenter="this.style.color='var(--text)'" onmouseleave="this.style.color='var(--text-3)'">&#8592; Back</button>
+      <span style="font-size:13px;font-weight:600;color:var(--text-2);">How do you want to deploy?</span>
+    </div>
+    <div class="welcome-card" onclick="selectBuildDeploy('cloudflare')">
+      <div class="welcome-card-icon">⚡</div>
+      <div class="welcome-card-title">Instant Publish</div>
+      <div class="welcome-card-desc">No GitHub needed — your app goes live in seconds on our managed hosting</div>
+    </div>
+    <div class="welcome-card" onclick="selectBuildDeploy('github')">
+      <div class="welcome-card-icon">🐙</div>
+      <div class="welcome-card-title">GitHub Pages</div>
+      <div class="welcome-card-desc">${ghConnected
+        ? 'Deploy to your own GitHub repo — free forever, full control'
+        : 'Connect GitHub to deploy your app to GitHub Pages for free'}</div>
+    </div>`;
+}
+
+/**
+ * User picked a deploy method from the Build App sub-screen.
+ */
+function selectBuildDeploy(mode) {
+  if (mode === 'github' && deployMode !== 'github') {
+    // GitHub not connected yet — redirect to connect flow
+    window.location.href = '/auth/github';
+    return;
+  }
+
+  deployMode = mode;
+  const cards = document.getElementById('welcomeCards');
+  if (cards) cards.style.display = 'none';
+  showPromptBar();
+
+  const input = document.getElementById('chatInput');
+  if (input) {
+    input.placeholder = "Describe the app you want to build… (e.g. 'A recipe website with search and dark theme')";
+    input.value = '';
+    input.focus();
+    autoResize(input);
   }
 }
 
@@ -230,34 +318,13 @@ function startNewConversation() {
         Describe any app or website in plain English. Ready4Launch will ask a few quick questions,
         then build and deploy your complete website — free.
       </p>
-      <div class="welcome-cards-grid" id="welcomeCards" style="display:none;">
-        <div class="welcome-card" onclick="startWithMode('build')">
-          <div class="welcome-card-icon">🏗️</div>
-          <div class="welcome-card-title">Build an App</div>
-          <div class="welcome-card-desc">Turn any idea into a full web app in minutes — just describe it in plain English</div>
-        </div>
-        <div class="welcome-card" onclick="startWithMode('convert')">
-          <div class="welcome-card-icon">📄</div>
-          <div class="welcome-card-title">Convert a Document</div>
-          <div class="welcome-card-desc">Export content to Word, Excel, PowerPoint or PDF instantly</div>
-        </div>
-        <div class="welcome-card" onclick="startWithMode('chat')">
-          <div class="welcome-card-icon">💬</div>
-          <div class="welcome-card-title">Chat &amp; Analyse</div>
-          <div class="welcome-card-desc">Ask anything, analyse data, research topics or get expert answers</div>
-        </div>
-        <div class="welcome-card" onclick="startWithMode('vision')">
-          <div class="welcome-card-icon">🖼️</div>
-          <div class="welcome-card-title">Analyse an Image</div>
-          <div class="welcome-card-desc">Upload any photo or diagram for instant AI-powered visual analysis</div>
-        </div>
-      </div>
+      <div class="welcome-cards-grid" id="welcomeCards" style="display:none;"></div>
       <div id="editModeBanner" style="display:none;background:rgba(124,58,237,0.12);border:1px solid rgba(124,58,237,0.3);border-radius:10px;padding:12px 16px;font-size:13px;color:var(--purple-light);margin-top:12px;">
         ✏️ <strong>Edit mode</strong> — describe the changes to <span id="editModeBannerRepo"></span>
       </div>
     </div>`;
 
-  // Re-show cards if user is still signed in
+  // Show cards (and hide prompt bar) for signed-in users
   showWelcomeCards();
 
   document.getElementById('chatInput').placeholder = 'Describe the app you want to build…';
