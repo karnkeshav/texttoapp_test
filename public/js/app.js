@@ -417,6 +417,9 @@ function selectRepoForEdit(owner, repo, defaultBranch) {
   // Update topbar
   document.getElementById('topbarSub').textContent = `Editing ${owner}/${repo}`;
 
+  // Show prompt bar (it was hidden by the welcome card flow)
+  showPromptBar();
+
   // Update input placeholder
   document.getElementById('chatInput').placeholder = `Describe your changes to ${repo}…`;
   document.getElementById('chatInput').focus();

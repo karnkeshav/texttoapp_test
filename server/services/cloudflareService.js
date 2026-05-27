@@ -197,12 +197,50 @@ async function deployToCloudflare(files, projectNameHint) {
   // refuses to navigate to and that doesn't represent the live site.
   const liveUrl = `https://${projectName}.pages.dev`;
 
+  // Verify the URL is actually serving content — CF edge propagation can lag
+  // even after the deployment pipeline reports "success".
+  await _verifyUrlLive(liveUrl);
+
   console.log(`[CF] Deployed → ${liveUrl}  (id: ${deployId}, stage: ${stageStatus})`);
   return {
     url:          liveUrl,
     projectName,
     deploymentId: deployId,
   };
+}
+
+/**
+ * Ping the live URL until it responds with a 2xx status.
+ * This guards against CF edge-propagation lag that can cause HTTP 500
+ * for a short window after the deployment pipeline reports "success".
+ * Gives up silently after maxWaitMs — the URL will be live momentarily.
+ */
+async function _verifyUrlLive(url, maxWaitMs = 60_000) {
+  const POLL_MS = 5_000;
+  const start   = Date.now();
+
+  // Brief initial pause — let the edge start serving before first check
+  await new Promise(r => setTimeout(r, 4_000));
+
+  while (Date.now() - start < maxWaitMs) {
+    try {
+      const r = await axios.get(url, {
+        timeout:        10_000,
+        validateStatus: null,   // never throw on HTTP error codes
+        maxRedirects:   5,
+      });
+      if (r.status >= 200 && r.status < 400) {
+        console.log(`[CF] URL live ✅ ${url} (HTTP ${r.status})`);
+        return;
+      }
+      console.log(`[CF] URL returned HTTP ${r.status} — waiting for edge…`);
+    } catch (err) {
+      console.log(`[CF] URL ping error: ${err.message} — retrying…`);
+    }
+    await new Promise(r => setTimeout(r, POLL_MS));
+  }
+
+  console.warn(`[CF] URL not verified as live after ${maxWaitMs / 1000}s — returning anyway`);
 }
 
 /**
