@@ -390,7 +390,11 @@ router.post('/chat', requireAuth, async (req, res) => {
     if (!isFirstMessage && ['conversion', 'reasoning', 'chat', 'vision', 'imageGen'].includes(req.session.chatPhase)) {
 
       // ── Build escape hatch — user wants to start a fresh app ─────────────
-      if (classifyTopLevelIntent(trimmedMessage) === 'build') {
+      // Only fire on an EXPLICIT build signal (BUILD_SIGNAL_RE).
+      // Do NOT use classifyTopLevelIntent() here — its default return value is
+      // 'build', so any ambiguous follow-up message (e.g. "put text in the image")
+      // would incorrectly reset the session and restart the state machine.
+      if (BUILD_SIGNAL_RE.test(trimmedMessage) && !IMAGE_GEN_RE.test(trimmedMessage)) {
         req.session.chatHistory      = [];
         req.session.planNotes        = '';
         req.session.buildMode        = null;
