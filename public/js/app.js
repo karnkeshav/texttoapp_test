@@ -536,7 +536,7 @@ async function sendMessage() {
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
             } else if (event.downloadable) {
-              finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx' };
+              finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx', pptPurpose: event.pptPurpose || null };
             } else {
               finalText = aiText;
             }
@@ -552,7 +552,7 @@ async function sendMessage() {
       if (finalText && typeof finalText === 'object' && finalText.editMode) {
         showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo, finalText.editBranch);
       } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
-        showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat);
+        showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat, finalText.pptPurpose);
       } else {
         checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
       }
@@ -692,7 +692,7 @@ const FORMAT_LABELS = {
   json: { label: 'JSON',        icon: '🔧', ext: 'json' },
 };
 
-function showDownloadOptions(aiMsgId, content, detectedFormat) {
+function showDownloadOptions(aiMsgId, content, detectedFormat, pptPurpose) {
   const bubble = document.getElementById(`${aiMsgId}-bubble`);
   if (!bubble) return;
 
@@ -726,7 +726,7 @@ function showDownloadOptions(aiMsgId, content, detectedFormat) {
     btn.textContent = `${icon} ${fmtLabel}`;
     // Use addEventListener so the full content string is captured in a closure,
     // never serialised into an HTML attribute where quotes would break parsing.
-    btn.addEventListener('click', () => downloadAs(btn, fmt, content, aiMsgId));
+    btn.addEventListener('click', () => downloadAs(btn, fmt, content, aiMsgId, pptPurpose));
     row.appendChild(btn);
   });
 
@@ -738,7 +738,7 @@ function showDownloadOptions(aiMsgId, content, detectedFormat) {
 }
 
 // aiMsgId is passed directly from showDownloadOptions — no fragile DOM traversal needed.
-async function downloadAs(btn, format, content, aiMsgId) {
+async function downloadAs(btn, format, content, aiMsgId, pptPurpose) {
   const statusEl = aiMsgId ? document.getElementById(`dl-status-${aiMsgId}`) : null;
 
   // Derive a filename from the first Markdown heading, fall back to "document"
@@ -754,7 +754,7 @@ async function downloadAs(btn, format, content, aiMsgId) {
     const res = await fetch('/api/convert-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, format, filename }),
+      body: JSON.stringify({ content, format, filename, purposeKey: pptPurpose || undefined }),
     });
 
     if (!res.ok) {

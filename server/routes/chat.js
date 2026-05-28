@@ -178,6 +178,7 @@ function buildPPTSystemPrompt(purpose) {
   const baseRules = `You are Ready4Launch's presentation specialist. Generate a professional, complete PowerPoint presentation.
 
 ABSOLUTE RULES — follow exactly:
+- Use only as many slides as the content genuinely needs. If 4 slides cover the topic well, use 4. If 9 are needed, use 9. Do NOT pad slides to reach a target number.
 - Maximum 10 slides total (including title slide). Never exceed 10.
 - Every slide must have substantial, real content — not placeholders or "add content here".
 - Each content slide must have at least 4–6 detailed bullet points or a rich table.
@@ -210,7 +211,7 @@ ${guide.look}
 
 TONE: ${guide.tone}
 
-Produce exactly 8–10 slides of real, substantive content. Make each slide feel professionally crafted.`;
+Produce as many slides as the content genuinely needs (maximum 10). Do not pad with empty slides; do not squeeze rich content into too few slides. Make each slide feel professionally crafted.`;
 }
 
 // ── System instructions for non-build intents ─────────────────────
@@ -558,7 +559,9 @@ router.post('/chat', requireAuth, async (req, res) => {
       });
 
       req.session.chatHistory.push({ role: 'assistant', content: responseText });
-      sendEvent('done', { text: responseText, downloadable: true, detectedFormat: 'pptx' });
+      // Include purposeKey so the frontend can pass it back on /api/convert-file
+      const resolvedPurpose = req.session.pptPurpose || null;
+      sendEvent('done', { text: responseText, downloadable: true, detectedFormat: 'pptx', pptPurpose: resolvedPurpose });
       return res.end();
     }
 

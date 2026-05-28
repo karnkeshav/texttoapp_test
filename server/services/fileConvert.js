@@ -388,8 +388,100 @@ async function toXlsx(elements) {
   return wb.xlsx.writeBuffer();
 }
 
+// ── PPT colour themes — one per purpose (1–5) plus a default ─────────────────
+// Each theme drives every colour constant inside toPptx.
+// isDark: true  → slide background is dark, body text is light
+// isDark: false → slide background is light, body text is dark
+// TITLE_TEXT    → text colour for slide titles (always WHITE — title bar uses ACCENT/BG2 bg)
+const PPT_THEMES = {
+  // Purpose 1 — Business / Strategy: clean corporate navy/gold
+  '1': {
+    isDark:     false,
+    BG:         'FAFBFE',   // near-white slide background
+    BG2:        'E8EEF8',   // soft blue-grey wash (decorative, alt table rows)
+    BG3:        'D0DCF4',   // slightly deeper wash
+    ACCENT:     '1B3A6B',   // navy — pillar, title bar, headings, bullets
+    ACCENT2:    'B07D2A',   // gold — secondary accent
+    WHITE:      'FFFFFF',
+    BODY:       '1E2D4A',   // near-navy — body text
+    MUTED:      '6B7280',   // grey — footer / dates
+    WARN:       'B07D2A',
+    TITLE_TEXT: 'FFFFFF',   // white text on navy title bar
+  },
+  // Purpose 2 — Teaching / Training: friendly indigo/orange
+  '2': {
+    isDark:     false,
+    BG:         'F5F6FF',
+    BG2:        'E0E4FF',
+    BG3:        'C7CFFF',
+    ACCENT:     '3730A3',   // deep indigo
+    ACCENT2:    'EA580C',   // orange
+    WHITE:      'FFFFFF',
+    BODY:       '1E1B4B',
+    MUTED:      '6B7280',
+    WARN:       'EA580C',
+    TITLE_TEXT: 'FFFFFF',
+  },
+  // Purpose 3 — Report / Research / Data: steel-blue precision
+  '3': {
+    isDark:     false,
+    BG:         'FFFFFF',
+    BG2:        'F1F5F9',
+    BG3:        'E2E8F0',
+    ACCENT:     '0C4A6E',   // deep ocean blue
+    ACCENT2:    '0284C7',   // lighter blue
+    WHITE:      'FFFFFF',
+    BODY:       '0F172A',   // near-black
+    MUTED:      '64748B',
+    WARN:       '0284C7',
+    TITLE_TEXT: 'FFFFFF',
+  },
+  // Purpose 4 — Pitch / Proposal: bold dark indigo/gold
+  '4': {
+    isDark:     true,
+    BG:         '0F172A',   // midnight navy
+    BG2:        '1E293B',
+    BG3:        '273549',
+    ACCENT:     '818CF8',   // soft indigo
+    ACCENT2:    'F59E0B',   // gold
+    WHITE:      'FFFFFF',
+    BODY:       'CBD5E1',
+    MUTED:      '64748B',
+    WARN:       'F59E0B',
+    TITLE_TEXT: 'FFFFFF',
+  },
+  // Purpose 5 — Marketing / Public Speaking: electric magenta/amber
+  '5': {
+    isDark:     true,
+    BG:         '120726',   // deep violet-black
+    BG2:        '1E0A40',
+    BG3:        '2D1060',
+    ACCENT:     'D946EF',   // bright magenta
+    ACCENT2:    'FBBF24',   // amber
+    WHITE:      'FFFFFF',
+    BODY:       'EDE9FE',   // soft lavender — readable body text
+    MUTED:      'A78BFA',
+    WARN:       'FBBF24',
+    TITLE_TEXT: 'FFFFFF',
+  },
+  // Default / "Other" — modern dark teal (original theme)
+  'default': {
+    isDark:     true,
+    BG:         '0A1628',
+    BG2:        '0F2040',
+    BG3:        '162848',
+    ACCENT:     '14B8A6',
+    ACCENT2:    '3B82F6',
+    WHITE:      'FFFFFF',
+    BODY:       'CBD5E1',
+    MUTED:      '64748B',
+    WARN:       'F59E0B',
+    TITLE_TEXT: 'FFFFFF',
+  },
+};
+
 // ── PowerPoint (.pptx) ───────────────────────────────────────────────────────
-async function toPptx(elements) {
+async function toPptx(elements, purposeKey) {
   const PptxGenJS = require('pptxgenjs');
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE';
@@ -398,17 +490,11 @@ async function toPptx(elements) {
   const SW = 13.33;  // slide width  inches
   const SH = 7.5;    // slide height inches
 
-  // ── Modern dark colour system ─────────────────────────────────
-  // Every slide uses a deep dark background for maximum visual impact.
-  const BG      = '0A1628';   // deep navy — main background
-  const BG2     = '0F2040';   // slightly lighter navy — cards / header bar
-  const BG3     = '162848';   // card bg
-  const ACCENT  = '14B8A6';   // teal — primary accent
-  const ACCENT2 = '3B82F6';   // blue — secondary accent
-  const WHITE   = 'FFFFFF';
-  const BODY    = 'CBD5E1';   // light grey — body text
-  const MUTED   = '64748B';   // muted / footer text
-  const WARN    = 'F59E0B';   // amber — highlight / callout
+  // ── Pick theme based on purpose ───────────────────────────────
+  const T = PPT_THEMES[String(purposeKey)] || PPT_THEMES['default'];
+  const { BG, BG2, BG3, ACCENT, ACCENT2, WHITE, BODY, MUTED, WARN, TITLE_TEXT, isDark } = T;
+  // Title bar bg: accent-coloured bar for light themes, subtler dark for dark themes
+  const TITLE_BAR = isDark ? BG2 : ACCENT;
 
   // ── Shape helpers ─────────────────────────────────────────────
   const R = pptx.ShapeType.rect;
@@ -432,7 +518,7 @@ async function toPptx(elements) {
     bgFill(s);
     // Left accent pillar
     box(s, 0, 0, 0.65, SH, ACCENT);
-    // Decorative circle (top-right)
+    // Decorative circle (top-right) — uses BG2 so it's subtle on any theme
     s.addShape(pptx.ShapeType.ellipse, {
       x: SW - 2.8, y: -1.4, w: 4.2, h: 4.2,
       fill:{ color:BG2 }, line:{ color:BG2 },
@@ -443,10 +529,11 @@ async function toPptx(elements) {
       fill:{ color:BG3 }, line:{ color:BG3 },
     });
 
-    // Title
+    // Title text colour: white on dark themes; heading-dark on light themes
+    const titleColor = isDark ? WHITE : ACCENT;
     s.addText(title || 'Presentation', {
       x:1.0, y:1.5, w:10.0, h:2.8,
-      fontFace:'Calibri', fontSize:42, bold:true, color:WHITE,
+      fontFace:'Calibri', fontSize:42, bold:true, color:titleColor,
       valign:'middle', wrap:true, lineSpacingMultiple:1.1,
     });
     // Accent bar under title
@@ -472,9 +559,10 @@ async function toPptx(elements) {
     bgFill(s);
     box(s, 0, 0, 0.65, SH, ACCENT);
     // Heading
+    const headColor = isDark ? WHITE : ACCENT;
     s.addText('Contents', {
       x:0.9, y:0.45, w:5, h:0.7,
-      fontFace:'Calibri', fontSize:28, bold:true, color:WHITE,
+      fontFace:'Calibri', fontSize:28, bold:true, color:headColor,
     });
     box(s, 0.9, 1.22, 2.8, 0.06, ACCENT);
 
@@ -505,10 +593,11 @@ async function toPptx(elements) {
     const s = pptx.addSlide();
     bgFill(s);
     box(s, 0, 0, 0.65, SH, ACCENT);
-    // Huge watermark number
+    // Huge watermark number — uses BG2 so it sits behind the title text subtly
+    const wmColor = isDark ? BG2 : BG3;
     s.addText(String(secNum).padStart(2,'0'), {
       x:7.5, y:0.0, w:5.5, h:SH,
-      fontFace:'Calibri', fontSize:220, bold:true, color:BG2,
+      fontFace:'Calibri', fontSize:220, bold:true, color:wmColor,
       align:'right', valign:'middle',
     });
     // Section chip
@@ -517,9 +606,10 @@ async function toPptx(elements) {
       fontFace:'Calibri', fontSize:12, bold:true, color:ACCENT, charSpacing:4,
     });
     box(s, 0.9, 2.4, 3.5, 0.07, ACCENT);
+    const secTitleColor = isDark ? WHITE : ACCENT;
     s.addText(title, {
       x:0.9, y:2.6, w:10.5, h:2.8,
-      fontFace:'Calibri', fontSize:34, bold:true, color:WHITE,
+      fontFace:'Calibri', fontSize:34, bold:true, color:secTitleColor,
       valign:'top', wrap:true,
     });
     footer(s, slideNum);
@@ -530,13 +620,13 @@ async function toPptx(elements) {
     const s = pptx.addSlide();
     bgFill(s);
     box(s, 0, 0, 0.65, SH, ACCENT);    // left accent pillar
-    box(s, 0.65, 0, SW - 0.65, 1.15, BG2);  // title bar
+    box(s, 0.65, 0, SW - 0.65, 1.15, TITLE_BAR);  // title bar (ACCENT for light, BG2 for dark)
     box(s, 0.65, 1.15, SW - 0.65, 0.06, ACCENT);  // accent underline
 
     if (title) {
       s.addText(title, {
         x:0.85, y:0.1, w:SW - 1.1, h:0.96,
-        fontFace:'Calibri', fontSize:19, bold:true, color:WHITE,
+        fontFace:'Calibri', fontSize:19, bold:true, color:TITLE_TEXT,
         valign:'middle', wrap:true,
       });
     }
@@ -564,7 +654,6 @@ async function toPptx(elements) {
             paraSpaceBefore:6, paraSpaceAfter:4, breakLine:true,
           }});
         } else if (item.type === 'text') {
-          // Convert plain text paragraphs to readable bullets on dark bg
           lines.push({ text: '›  ' + item.text, options:{
             fontFace:'Calibri', fontSize:12, color:BODY,
             paraSpaceAfter:6, breakLine:true,
@@ -588,6 +677,10 @@ async function toPptx(elements) {
     }
 
     // ── Table column ──────────────────────────────────────────
+    // Header: always ACCENT bg + white text for strong contrast on any theme
+    // Alt rows: BG2 / BG3 — subtle on light themes, visible on dark
+    const tblAlt1 = isDark ? BG3 : BG2;
+    const tblAlt2 = isDark ? '132038' : BG3;
     let ty = CY;
     tables.forEach(tbl => {
       const cols = tbl.rows[0] ? tbl.rows[0].length : 1;
@@ -598,7 +691,7 @@ async function toPptx(elements) {
           options:{
             fontFace:'Calibri', fontSize:10, bold: ri === 0,
             color: ri === 0 ? WHITE : BODY,
-            fill:  ri === 0 ? BG2 : (ri % 2 === 0 ? BG3 : '132038'),
+            fill:  ri === 0 ? ACCENT : (ri % 2 === 0 ? tblAlt1 : tblAlt2),
             align:'left', valign:'middle',
             margin:[4,8,4,8],
             border:[
@@ -974,12 +1067,14 @@ const MIME = {
 };
 
 /**
- * @param {string} content   - Raw AI Markdown content
- * @param {string} format    - 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'csv' | 'json'
- * @param {string} filename  - Desired filename without extension
+ * @param {string} content        - Raw AI Markdown content
+ * @param {string} format         - 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'csv' | 'json'
+ * @param {string} filename       - Desired filename without extension
+ * @param {object} [options]      - Optional extra settings
+ * @param {string} [options.purposeKey] - PPT purpose key ('1'–'5') for theme selection
  * @returns {Promise<{ buffer: Buffer|string, mimeType: string, ext: string }>}
  */
-async function convert(content, format, filename = 'document') {
+async function convert(content, format, filename = 'document', options = {}) {
   const elements = parseMarkdownElements(content);
   const mimeType = MIME[format] || MIME.docx;
   const ext = format;
@@ -988,7 +1083,7 @@ async function convert(content, format, filename = 'document') {
   switch (format) {
     case 'docx': buffer = await toDocx(elements); break;
     case 'xlsx': buffer = await toXlsx(elements); break;
-    case 'pptx': buffer = await toPptx(elements); break;
+    case 'pptx': buffer = await toPptx(elements, options.purposeKey); break;
     case 'pdf':  buffer = await toPdf(elements);  break;
     case 'csv':  buffer = toCsv(elements);  break;
     case 'json': buffer = toJson(elements); break;
