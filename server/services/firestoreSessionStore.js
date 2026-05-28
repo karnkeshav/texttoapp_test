@@ -57,10 +57,20 @@ class FirestoreSessionStore extends EventEmitter {
     const coll = this._coll();
     if (!coll) return cb(null); // Firestore not ready — silently skip
 
-    const maxAge   = sess?.cookie?.maxAge ?? 7 * 24 * 60 * 60 * 1000;
+    const maxAge    = sess?.cookie?.maxAge ?? 7 * 24 * 60 * 60 * 1000;
     const expiresAt = new Date(Date.now() + maxAge);
 
-    coll.doc(sid).set({ sess, expiresAt, updatedAt: new Date() })
+    // Firestore rejects objects with custom prototypes (e.g. express-session's Session class).
+    // JSON round-trip strips the prototype and produces a plain serialisable object.
+    let plainSess;
+    try {
+      plainSess = JSON.parse(JSON.stringify(sess));
+    } catch (err) {
+      console.warn('[SessionStore] session serialisation failed — skipping persist:', err.message);
+      return cb(null); // fail-open
+    }
+
+    coll.doc(sid).set({ sess: plainSess, expiresAt, updatedAt: new Date() })
       .then(() => cb(null))
       .catch(err => {
         console.warn('[SessionStore] set error (session may not persist):', err.message);
