@@ -391,6 +391,31 @@ router.post('/chat', requireAuth, async (req, res) => {
 
   const trimmedMessage = message.trim();
 
+  // ── PPT purpose intercept — fires on ANY new PPT request ──────
+  // Runs before all other routing so it works regardless of session state.
+  // Skipped when: already answering the purpose question, already generating
+  // a PPT in the same session (chatPhase==='conversion' + pptPurpose set),
+  // or when an attachment is present.
+  const _isPptRequest = !hasAttachment &&
+    CONVERSION_RE.test(trimmedMessage) &&
+    detectConversionFormat(trimmedMessage) === 'pptx';
+  const _inPptPurposeFlow = req.session.chatPhase === 'ppt_purpose';
+  const _pptAlreadyAnswered = req.session.chatPhase === 'conversion' &&
+    req.session.conversionFormat === 'pptx' &&
+    !!req.session.pptPurpose;
+
+  if (_isPptRequest && !_inPptPurposeFlow && !_pptAlreadyAnswered) {
+    // Reset PPT state and ask purpose before anything else
+    req.session.chatPhase      = 'ppt_purpose';
+    req.session.pptOriginalMsg = trimmedMessage;
+    req.session.pptPurpose     = '';
+    req.session.chatHistory.push({ role: 'user',      content: trimmedMessage });
+    req.session.chatHistory.push({ role: 'assistant', content: PPT_PURPOSE_QUESTION });
+    sendEvent('chunk', { text: PPT_PURPOSE_QUESTION });
+    sendEvent('done',  { text: PPT_PURPOSE_QUESTION });
+    return res.end();
+  }
+
   try {
     // ════════════════════════════════════════════════════════════
     // ATTACHMENT ROUTING — handle image / document attachments before the
@@ -443,18 +468,6 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       // ── Text-response intents ────────────────────────────────────────
       if (intent === 'conversion' || intent === 'reasoning' || intent === 'chat') {
-
-        // ── PPT special case: ask purpose before generating ──────────
-        const format = detectConversionFormat(trimmedMessage);
-        if (intent === 'conversion' && format === 'pptx') {
-          req.session.chatPhase      = 'ppt_purpose';
-          req.session.pptOriginalMsg = trimmedMessage;
-          req.session.chatHistory.push({ role: 'user',      content: trimmedMessage });
-          req.session.chatHistory.push({ role: 'assistant', content: PPT_PURPOSE_QUESTION });
-          sendEvent('chunk', { text: PPT_PURPOSE_QUESTION });
-          sendEvent('done',  { text: PPT_PURPOSE_QUESTION });
-          return res.end();
-        }
 
         const sysMap = {
           conversion: SYS_CONVERSION,
