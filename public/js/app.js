@@ -500,9 +500,10 @@ function handleInputKeydown(e) {
 }
 
 // ── Sending a message ─────────────────────────────────────────────
-async function sendMessage() {
+async function sendMessage(buttonValue) {
   const input = document.getElementById('chatInput');
-  const text = input.value.trim();
+  // Use button value if provided (from choice buttons), otherwise get text from input
+  const text = buttonValue ? buttonValue : input.value.trim();
   // Allow send if there's text OR an attachment (or both)
   if ((!text && !pendingAttachment) || isStreaming) return;
 
