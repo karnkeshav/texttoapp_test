@@ -88,6 +88,9 @@ function checkSelectors(html) {
 // Extracts every inline <script> block and compiles it with Node's vm.Script.
 // Compilation parses the JS without executing it — browser APIs (document, window,
 // fetch) never run, so there are no ReferenceErrors, only SyntaxErrors.
+//
+// Special handling for JSX: If code contains JSX syntax (React component returns),
+// skip strict vm.Script validation since JSX requires Babel. Instead do basic checks.
 function checkJSSyntax(html) {
   const issues = [];
   // Match <script ...> blocks; capture attributes separately so we can skip src=
@@ -103,13 +106,40 @@ function checkJSSyntax(html) {
     if (/\bsrc\s*=/i.test(attrs) || !code) continue;
 
     blockNum++;
-    try {
-      new vm.Script(code); // compile-only — does not execute
-    } catch (err) {
-      if (err instanceof SyntaxError) {
-        // Trim the long v8 caret line from the message for readability
-        const msg = err.message.split('\n')[0];
-        issues.push(`Script block ${blockNum}: JavaScript SyntaxError — ${msg}`);
+
+    // Detect JSX patterns: return (...JSX), React.createElement, function App() with JSX
+    const isLikelyJSX = /return\s*\(?\s*<|ReactDOM\.render|React\.createElement|<\/?\w+[\s>]/.test(code);
+
+    if (isLikelyJSX) {
+      // For JSX code, do basic bracket/paren matching instead of vm.Script
+      // (JSX requires Babel transpilation, which we don't have in Node.js vm)
+
+      const openBraces = (code.match(/\{/g) || []).length;
+      const closeBraces = (code.match(/\}/g) || []).length;
+      const openParens = (code.match(/\(/g) || []).length;
+      const closeParens = (code.match(/\)/g) || []).length;
+      const openBrackets = (code.match(/\[/g) || []).length;
+      const closeBrackets = (code.match(/\]/g) || []).length;
+
+      if (openBraces !== closeBraces) {
+        issues.push(`Script block ${blockNum}: Mismatched braces { }`);
+      }
+      if (openParens !== closeParens) {
+        issues.push(`Script block ${blockNum}: Mismatched parentheses ( )`);
+      }
+      if (openBrackets !== closeBrackets) {
+        issues.push(`Script block ${blockNum}: Mismatched brackets [ ]`);
+      }
+    } else {
+      // For vanilla JavaScript, use strict vm.Script validation
+      try {
+        new vm.Script(code); // compile-only — does not execute
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          // Trim the long v8 caret line from the message for readability
+          const msg = err.message.split('\n')[0];
+          issues.push(`Script block ${blockNum}: JavaScript SyntaxError — ${msg}`);
+        }
       }
     }
   }

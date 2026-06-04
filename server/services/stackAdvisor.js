@@ -207,12 +207,15 @@ function buildStackContext(stack, answers) {
   // Framework-specific instructions
   if (stack.frontend === 'react') {
     lines.push(
-      `• Use React 18 via CDN (no build step — all in one HTML file or separate JS files)`,
-      `• Use hooks (useState, useEffect, useContext) — no class components`,
-      `• Load: <script src="https://unpkg.com/react@18/umd/react.development.js"></script>`,
-      `• Load: <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>`,
-      `• Load: <script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>`,
-      `• Use <script type="text/babel"> for JSX components`,
+      `• Generate React 18 with JSX syntax (via CDN, no build step)`,
+      `• REQUIRED: Load React, ReactDOM, and Babel from CDN for JSX transpilation`,
+      `  - <script src="https://unpkg.com/react@18/umd/react.development.js"></script>`,
+      `  - <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>`,
+      `  - <script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>`,
+      `• REQUIRED: Use <script type="text/babel"> for all React component code`,
+      `• Use modern React hooks: useState, useEffect, useContext, useReducer`,
+      `• Components: function App() { return (<JSX>); } — NOT class components`,
+      `• JSX syntax is REQUIRED: Use <Component />, <div>, etc., not React.createElement()`,
     );
   } else if (stack.frontend === 'vue') {
     lines.push(
