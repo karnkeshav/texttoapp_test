@@ -189,13 +189,15 @@ function scrollToGuide() {
 }
 
 // ── Auth status ──────────────────────────────────────────────────
-// If the visitor already has a GitHub session, replace the "Connect GitHub"
-// landing-page buttons with a direct "Open app" link.
+// If the visitor already has a GitHub session, replace the sign-in
+// buttons with a direct "Open AppBuilder" link.
+// Uses hasGitHub (not just authenticated) so the sign-in button stays
+// visible until the user has actually connected their GitHub account.
 async function checkAuthStatus() {
   try {
     const res = await fetch('/auth/status');
     const data = await res.json();
-    if (data.authenticated) {
+    if (data.hasGitHub) {
       const openAppHTML  = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" width="18" height="18"><path d="M5 12h14M12 5l7 7-7 7"/></svg> Open AppBuilder →`;
       const openAppStyle = 'background:linear-gradient(135deg,#10b981,#059669) !important;color:#fff !important;border-color:transparent !important;';
       // Replace all sign-in links with "Open app"
