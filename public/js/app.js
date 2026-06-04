@@ -618,6 +618,11 @@ async function sendMessage() {
               renderStackSelector(aiMsgId);
             }
 
+            // ── Edit choice trigger ──────────────────────────────────
+            if (event.showEditChoice) {
+              renderEditChoice(aiMsgId);
+            }
+
             // Carry context for post-stream handling
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
@@ -643,7 +648,13 @@ async function sendMessage() {
 
     if (finalText !== null) {
       if (finalText && typeof finalText === 'object' && finalText.editMode) {
-        showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo, finalText.editBranch);
+        // Modified edit: treat as a build-like update, show deploy card for pushing changes
+        checkForCode(finalText.text, null, null, null, {
+          editMode: true,
+          editOwner: finalText.editOwner,
+          editRepo: finalText.editRepo,
+          editBranch: finalText.editBranch
+        });
       } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
         showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat, finalText.pptPurpose);
       } else if (finalText && typeof finalText === 'object' && finalText.build) {
@@ -742,7 +753,8 @@ function setStatus(text, thinking = false) {
 // hintRepoName — optional pre-parsed value from the backend done event (more reliable)
 // dryRun      — { passed, issues, summary } from server-side validation
 // deployMode  — 'github-pages' | 'local' | 'manual'
-function checkForCode(text, hintRepoName, dryRun, deployMode) {
+// editContext — { editMode, editOwner, editRepo, editBranch } for updating existing repos
+function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
   if (!text) return;
 
   // Extract REPO_NAME — prefer the server-side hint (more reliable than regex on large text)
@@ -800,7 +812,7 @@ function checkForCode(text, hintRepoName, dryRun, deployMode) {
 
   if (!files.length) return; // nothing useful to deploy
 
-  showDeployPrompt(repoName, files, dryRun, deployMode);
+  showDeployPrompt(repoName, files, dryRun, deployMode, editContext);
 }
 
 // ── Download options card (conversion mode) ──────────────────────
@@ -1042,12 +1054,13 @@ function loadPendingBuild() {
   } catch (_) { return null; }
 }
 
-function showDeployPrompt(repoName, files, dryRun, deployMode) {
+function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
   // Persist so the user doesn't lose their build on refresh / server restart
   savePendingBuild(repoName, files);
 
   const fileId = `fid-${++fileIdCounter}`;
-  pendingFiles.set(fileId, { repoName, files });
+  const isEditMode = editContext && editContext.editMode;
+  pendingFiles.set(fileId, { repoName, files, editContext });
 
   const container = document.getElementById('chatMessages');
   const div = document.createElement('div');
@@ -1068,9 +1081,12 @@ function showDeployPrompt(repoName, files, dryRun, deployMode) {
     </div>${issues}`;
   }
 
-  // ── CTA based on deploy mode ──────────────────────────────────
+  // ── CTA based on deploy mode or edit mode ─────────────────────
   let ctaLabel, ctaDesc;
-  if (deployMode === 'local') {
+  if (isEditMode) {
+    ctaLabel = '🔄 Update & Push Changes';
+    ctaDesc  = `Your modifications are ready. Push the updated code back to <strong>${editContext.editOwner}/${editContext.editRepo}</strong>.`;
+  } else if (deployMode === 'local') {
     ctaLabel = '🚀 Push to GitHub + Launch Locally';
     ctaDesc  = `Ready4Launch will push your code to <strong>${repoName}</strong>, then automatically start the app in a new terminal window.`;
   } else if (deployMode === 'manual') {
@@ -1102,15 +1118,32 @@ async function deployToGitHub(fileId, btn) {
   if (!pending) return;
 
   btn.disabled = true;
-  btn.innerHTML = '<span style="opacity:0.7">Creating repo &amp; deploying…</span>';
 
-  const { repoName, files } = pending;
+  const { repoName, files, editContext } = pending;
+  const isEditMode = editContext && editContext.editMode;
+
+  btn.innerHTML = `<span style="opacity:0.7">${isEditMode ? 'Pushing changes…' : 'Creating repo &amp; deploying…'}</span>`;
 
   try {
-    const res  = await fetch('/api/github/deploy', {
+    // ── Choose endpoint based on mode ────────────────────────────
+    const endpoint = isEditMode ? '/api/github/push' : '/api/github/deploy';
+    const body = isEditMode
+      ? {
+          owner: editContext.editOwner,
+          repo: editContext.editRepo,
+          files,
+          branch: editContext.editBranch || 'main'
+        }
+      : {
+          repoName,
+          files,
+          description: `Built with Ready4Launch`
+        };
+
+    const res  = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoName, files, description: `Built with Ready4Launch` }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     const card = btn.closest('div[style]');
@@ -1133,6 +1166,29 @@ async function deployToGitHub(fileId, btn) {
       clearPendingBuild(); // successfully deployed — no need to resume this build later
 
       const isNodeApp = !!data.localUrl;
+      const editSuccess = isEditMode;
+
+      if (editSuccess) {
+        // ── Edit success: show updated repo link ──────────────────
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>✅ Changes pushed successfully!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your modifications have been pushed to <strong>${editContext.editOwner}/${editContext.editRepo}</strong>.
+              The updated app is now live.
+            </p>
+            <p style="margin-bottom:8px;">
+              🔗 <strong>Repository:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+            <p style="margin-bottom:0;">
+              🌐 <strong>Live Site:</strong>
+              <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
+            </p>
+          </div>
+        `;
+        return;
+      }
 
       if (isNodeApp) {
         // ── Node.js / full-stack app ──────────────────────────────
@@ -1794,4 +1850,38 @@ function submitStackSelection(aiMsgId) {
   const type     = window._stackType     || 'static';
   const msg = `__STACK__:${JSON.stringify({ frontend, backend, type })}`;
   sendMessage(msg);
+}
+// ── Edit choice UI (Change stack vs Modify) ────────────────────────
+
+function renderEditChoice(aiMsgId) {
+  const bubble = document.getElementById(`${aiMsgId}-bubble`);
+  if (!bubble) return;
+
+  const card = document.createElement('div');
+  card.style.cssText = `margin-top:16px;padding:20px;border-radius:12px;
+    background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-family:var(--font);`;
+
+  card.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+      <button onclick="sendMessage('1')"
+        style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;border-radius:8px;
+               padding:12px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);
+               transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:6px;"
+        onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+        <span style="font-size:18px;">🔄</span>
+        Change the stack
+      </button>
+      <button onclick="sendMessage('2')"
+        style="background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;border:none;border-radius:8px;
+               padding:12px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);
+               transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:6px;"
+        onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+        <span style="font-size:18px;">✨</span>
+        Modify within same stack
+      </button>
+    </div>
+  `;
+
+  bubble.appendChild(card);
+  scrollToBottom();
 }

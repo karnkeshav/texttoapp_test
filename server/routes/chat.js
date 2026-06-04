@@ -722,32 +722,80 @@ router.post('/chat', requireAuth, async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════
-    // EDIT MODE — conversational questions OR code changes for an existing repo.
+    // EDIT MODE — show choice (change stack vs modify) OR apply changes
     // Triggered whenever the client sends editMode=true (any turn in the session).
     // ════════════════════════════════════════════════════════════
     if (isEditMode && editOwner && editRepo) {
       // Initialise session context on first edit-mode message
       if (isFirstMessage) {
         req.session.editMode    = { owner: editOwner, repo: editRepo, branch: editBranch };
-        req.session.chatPhase   = 'editing';
+        req.session.chatPhase   = 'edit_choice';  // NEW: show choice screen first
         req.session.currentCode = null; // fetched lazily below
       }
 
-      // Fetch (and cache) the current index.html so we only hit GitHub once per session
-      if (!req.session.currentCode) {
-        sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
-        try {
-          req.session.currentCode = await getFileContent(
-            req.session.githubToken, editOwner, editRepo, 'index.html'
-          );
-        } catch (fetchErr) {
-          sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
-          return res.end();
+      // ── PHASE: edit_choice — show "Change stack" vs "Modify app" ──────────
+      if (req.session.chatPhase === 'edit_choice' && isFirstMessage) {
+        // Fetch (and cache) the current index.html so we only hit GitHub once per session
+        if (!req.session.currentCode) {
+          sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
+          try {
+            req.session.currentCode = await getFileContent(req.session.githubToken, editOwner, editRepo, 'index.html');
+          } catch (fetchErr) {
+            sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
+            return res.end();
+          }
         }
         if (!req.session.currentCode) {
           sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
           return res.end();
         }
+
+        // ── Show edit choice screen ────────────────────────────────────
+        const choiceMsg = `I found your app in **${editOwner}/${editRepo}**. What would you like to do?\n\n` +
+          `1️⃣ **Change the tech stack** — rebuild with different frontend/backend\n` +
+          `2️⃣ **Modify within same stack** — enhance or fix the existing app`;
+
+        req.session.chatHistory.push({ role: 'user',      content: '[Entering edit mode]' });
+        req.session.chatHistory.push({ role: 'assistant', content: choiceMsg });
+        sendEvent('chunk', { text: choiceMsg });
+        sendEvent('done',  { text: choiceMsg, showEditChoice: true });
+        return res.end();
+      }
+
+      // ── PHASE: edit_choice follow-up — user picks change stack or modify ──
+      if (req.session.chatPhase === 'edit_choice' && !isFirstMessage) {
+        const choice = trimmedMessage.toLowerCase().trim();
+
+        // Choice 1: Change the stack → reset to stack selection
+        if (choice.includes('change') || choice.match(/^1|stack/i)) {
+          req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+          req.session.chatPhase = 'stack_selection';
+          req.session.selectedStack = null;
+          req.session.editMode = null; // Clear edit context, reset to build
+
+          const resetMsg = `Got it! Let's rebuild with a new stack. Choose your new tech stack:`;
+          req.session.chatHistory.push({ role: 'assistant', content: resetMsg });
+          sendEvent('chunk', { text: resetMsg });
+          sendEvent('done',  { text: resetMsg, showStackSelector: true });
+          return res.end();
+        }
+
+        // Choice 2: Modify within same stack → ask what changes
+        if (choice.includes('modif') || choice.match(/^2|same/i)) {
+          req.session.chatPhase = 'editing'; // Move to edit phase
+          req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+
+          const askMsg = `Perfect! What would you like me to **fix, enhance, or add** to your app?`;
+          req.session.chatHistory.push({ role: 'assistant', content: askMsg });
+          sendEvent('chunk', { text: askMsg });
+          sendEvent('done',  { text: askMsg });
+          return res.end();
+        }
+
+        // Invalid choice → re-show
+        sendEvent('chunk', { text: 'Please reply with 1 (change stack) or 2 (modify app).' });
+        sendEvent('done',  { text: 'Please reply with 1 (change stack) or 2 (modify app).', showEditChoice: true });
+        return res.end();
       }
 
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
@@ -775,21 +823,52 @@ router.post('/chat', requireAuth, async (req, res) => {
       }
 
       // ── Edit intent: apply the requested change, return full updated HTML ──
+      // OPTION A: Strengthen the prompt to ensure code blocks are generated
       const editPrompt =
+        `You are a senior developer. Your ONLY job is to return valid HTML code — nothing else.\n\n` +
         `EDIT MODE — modify this existing app. Return the COMPLETE updated HTML file.\n` +
-        `Repository: ${editOwner}/${editRepo}\n\n` +
+        `Repository: ${editOwner}/${editRepo}\n` +
+        `Branch: ${editBranch || 'main'}\n\n` +
         `CURRENT CODE:\n\`\`\`html\n${req.session.currentCode}\n\`\`\`\n\n` +
-        `USER'S CHANGE REQUEST: ${trimmedMessage}\n\n` +
-        `INSTRUCTIONS: Apply ONLY the requested changes. Keep all working features intact. ` +
-        `Output the entire updated HTML file in a single \`\`\`html block.`;
+        `USER'S CHANGE REQUEST:\n${trimmedMessage}\n\n` +
+        `CRITICAL INSTRUCTIONS:\n` +
+        `1. Apply ONLY the requested changes\n` +
+        `2. Keep all existing working features intact\n` +
+        `3. Return the ENTIRE updated HTML file in a SINGLE \`\`\`html code block\n` +
+        `4. Do NOT explain, summarize, or comment — only code\n` +
+        `5. The code block MUST start with \`\`\`html and end with \`\`\`\n` +
+        `6. Do NOT output REPO_NAME, file paths, or any text outside the code block`;
 
       sendEvent('status', { message: 'Applying your changes…' });
-      await antigravity.streamChat(editPrompt, [], null, onChunk, onEditDone, '');
 
-      if (!capturedResponse || !/```html/i.test(capturedResponse)) {
-        sendEvent('error', { message: 'Could not generate the updated code. Please try again.' });
+      // OPTION B: Retry loop — if validation fails, re-prompt with stricter formatting
+      let retries = 0;
+      const maxRetries = 2;
+      let validResponse = null;
+
+      while (retries < maxRetries && !validResponse) {
+        capturedResponse = null;
+
+        const promptForAttempt = retries === 0
+          ? editPrompt
+          : `${editPrompt}\n\nPrevious attempt failed formatting. YOU MUST output code in a \`\`\`html ... \`\`\` block. ` +
+            `Start your response with exactly: \`\`\`html\nThen the complete HTML code.\nThen: \`\`\`\nNothing else.`;
+
+        await antigravity.streamChat(promptForAttempt, [], null, onChunk, onEditDone, '');
+
+        if (capturedResponse && /```html/i.test(capturedResponse)) {
+          validResponse = capturedResponse;
+          break;
+        }
+        retries++;
+      }
+
+      if (!validResponse) {
+        sendEvent('error', { message: 'Could not generate the updated code after 2 attempts. Please try a simpler change or rebuild from scratch.' });
         return res.end();
       }
+
+      capturedResponse = validResponse;
 
       // Semantic quality pass — verify the requested changes were actually applied
       let finalEdit = capturedResponse;
