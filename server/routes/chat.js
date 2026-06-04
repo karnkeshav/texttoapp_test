@@ -27,8 +27,27 @@ const { fullQualityPass } = require('../services/codeQuality');
 const { pooledStream, pooledGenerate } = require('../services/geminiPool');
 const { checkGate, quickSection } = require('../middleware/packageGate');
 const { recordSession } = require('../services/firestoreService');
+const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } = require('../services/stackAdvisor');
 
 const router = express.Router();
+
+// ── Extract generated files from AI response text (mirrors app.js logic) ──
+function extractFilesFromText(text) {
+  const files = [];
+  const BLOCK_RE = /```(?:html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml)\s*([\s\S]*?)```/gi;
+  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
+  let m;
+  while ((m = BLOCK_RE.exec(text)) !== null) {
+    const content   = m[1].trim();
+    const firstLine = content.split('\n')[0];
+    const pathMatch = FILE_COMMENT_RE.exec(firstLine);
+    if (pathMatch) {
+      const body = content.split('\n').slice(1).join('\n').trim();
+      if (body.length >= 10) files.push({ path: pathMatch[1], content: body });
+    }
+  }
+  return files;
+}
 
 // ── Fixed mode question ───────────────────────────────────────────
 const MODE_QUESTION = `One quick question before I start — what are we building?
@@ -402,6 +421,8 @@ router.post('/chat', requireAuth, async (req, res) => {
     req.session.editMode         = null;
     req.session.pptOriginalMsg   = '';     // PPT ask-back: user's original request
     req.session.pptPurpose       = '';     // PPT ask-back: chosen purpose key (1-6)
+    req.session.selectedStack    = null;   // stack selection (Complete Product flow)
+    req.session.stackQuestions   = null;   // stack-aware Q1-Q5
   }
 
   const history = req.session.chatHistory;
@@ -863,14 +884,20 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       if (detected === 'complete') {
         req.session.buildMode       = 'complete';
-        req.session.chatPhase       = 'complete_questioning';
+        req.session.chatPhase       = 'stack_selection';
         req.session.questionIndex   = 0;
         req.session.gatheredAnswers = [];
+        req.session.selectedStack   = null;
 
-        const q = COMPLETE_QUESTIONS[0];
-        req.session.chatHistory.push({ role: 'assistant', content: q });
-        sendEvent('chunk', { text: q });
-        sendEvent('done',  { text: q });
+        const stackIntro = `Great — let's build this properly. 🎯
+
+**First, choose your tech stack.** This tells me exactly which technologies to use so the generated code is ready to run without any rewrites.
+
+Select your stack below, then I'll ask 5 focused questions to understand your requirements fully before writing a single line of code.`;
+
+        req.session.chatHistory.push({ role: 'assistant', content: stackIntro });
+        sendEvent('chunk', { text: stackIntro });
+        sendEvent('done',  { text: stackIntro, showStackSelector: true });
         return res.end();
 
       } else {
@@ -888,25 +915,76 @@ router.post('/chat', requireAuth, async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════
+    // PHASE: stack_selection — user picks their tech stack
+    // Message format: __STACK__:{"type":"spa","frontend":"react","backend":"nodejs"}
+    // ════════════════════════════════════════════════════════════
+    if (req.session.chatPhase === 'stack_selection') {
+      if (!trimmedMessage.startsWith('__STACK__:')) {
+        // User typed something instead of using the selector — acknowledge and re-show
+        const retry = `Please use the stack selector above to choose your technology stack, then click "Build with this stack →" to continue.`;
+        sendEvent('chunk', { text: retry });
+        sendEvent('done',  { text: retry, showStackSelector: true });
+        return res.end();
+      }
+
+      // Parse the stack JSON
+      let stack;
+      try {
+        stack = JSON.parse(trimmedMessage.slice('__STACK__:'.length));
+      } catch {
+        sendEvent('error', { message: 'Invalid stack selection — please try again.' });
+        return res.end();
+      }
+
+      req.session.selectedStack   = stack;
+      req.session.chatPhase       = 'complete_questioning';
+      req.session.questionIndex   = 0;
+      req.session.gatheredAnswers = [];
+
+      // Generate 5 stack-aware questions
+      req.session.stackQuestions = getStackQuestions(stack);
+
+      const { getStackLabel } = require('../services/stackAdvisor');
+      const label = getStackLabel(stack);
+      const deployMode = getDeploymentMode(stack);
+      const deployNote = deployMode === 'github-pages'
+        ? '🌐 *Deploys to GitHub Pages — no server needed*'
+        : deployMode === 'local'
+        ? '💻 *Runs on localhost — I\'ll launch it automatically after building*'
+        : '📋 *Needs local setup — I\'ll include full instructions*';
+
+      const confirm = `Perfect — **${label}** it is!\n${deployNote}\n\nNow let's get the full picture. I'll ask 5 focused questions.\n\n---\n\n` + req.session.stackQuestions[0];
+
+      req.session.chatHistory.push({ role: 'user',      content: `[Stack selected: ${label}]` });
+      req.session.chatHistory.push({ role: 'assistant', content: confirm });
+      sendEvent('chunk', { text: confirm });
+      sendEvent('done',  { text: confirm });
+      return res.end();
+    }
+
+    // ════════════════════════════════════════════════════════════
     // PHASE: complete_questioning — Q1 through Q5
     // ════════════════════════════════════════════════════════════
     if (req.session.chatPhase === 'complete_questioning') {
+      // Use stack-specific questions if a stack was selected, otherwise fallback to generic
+      const questions = req.session.stackQuestions || COMPLETE_QUESTIONS;
+
       // Save answer for the current question
-      const currentQ = COMPLETE_QUESTIONS[req.session.questionIndex];
+      const currentQ = questions[req.session.questionIndex];
       req.session.gatheredAnswers.push({ q: currentQ, a: trimmedMessage });
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
       req.session.questionIndex++;
 
-      if (req.session.questionIndex < COMPLETE_QUESTIONS.length) {
+      if (req.session.questionIndex < questions.length) {
         // More questions remain
-        const nextQ = COMPLETE_QUESTIONS[req.session.questionIndex];
+        const nextQ = questions[req.session.questionIndex];
         req.session.chatHistory.push({ role: 'assistant', content: nextQ });
         sendEvent('chunk', { text: nextQ });
         sendEvent('done',  { text: nextQ });
         return res.end();
       }
 
-      // All 5 answers collected → compile spec → fall through to build
+      // All answers collected → compile spec → inject stack context → fall through to build
       sendEvent('status', { message: 'Compiling your requirements into a build brief…' });
       try {
         const spec = await compileSpec(
@@ -914,12 +992,18 @@ router.post('/chat', requireAuth, async (req, res) => {
           req.session.originalRequest,
           apiKey
         );
-        req.session.compiledSpec = spec;
-        console.log('[Chat] Spec compiled, length:', spec.length);
+        // Prepend stack context so the AI knows exactly what to build
+        const stackCtx = req.session.selectedStack
+          ? buildStackContext(req.session.selectedStack, req.session.gatheredAnswers) + '\n\n'
+          : '';
+        req.session.compiledSpec = stackCtx + spec;
+        console.log('[Chat] Spec compiled, length:', req.session.compiledSpec.length);
       } catch (specErr) {
         console.warn('[Chat] Spec compile failed (non-fatal):', specErr.message);
-        // Fallback: join the raw answers
-        req.session.compiledSpec = req.session.gatheredAnswers
+        const stackCtx = req.session.selectedStack
+          ? buildStackContext(req.session.selectedStack, req.session.gatheredAnswers) + '\n\n'
+          : '';
+        req.session.compiledSpec = stackCtx + req.session.gatheredAnswers
           .map((qa, i) => `${i + 1}. ${qa.a}`)
           .join('\n');
       }
@@ -1055,12 +1139,26 @@ router.post('/chat', requireAuth, async (req, res) => {
       // Flag the frontend explicitly when this is a build response.
       // This lets the client show the deploy button even if its own
       // regex-parsing of the large HTML payload fails.
-      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) || /```html/i.test(finalText);
+      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) || /```html/i.test(finalText) || /```json/i.test(finalText);
       if (hasBuildOutput) {
         donePayload.build = true;
         // Also extract REPO_NAME server-side as a reliable fallback
         const rn = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
         if (rn) donePayload.repoName = rn[1].toLowerCase();
+
+        // ── Dry run: extract files and validate them ──────────────
+        if (req.session.selectedStack) {
+          try {
+            const extractedFiles = extractFilesFromText(finalText);
+            const dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
+            donePayload.dryRun = dryResult;
+            // Include deployment mode so frontend shows correct CTA
+            donePayload.deployMode = getDeploymentMode(req.session.selectedStack);
+            console.log(`[DryRun] ${dryResult.summary}`);
+          } catch (dryErr) {
+            console.warn('[DryRun] Non-fatal:', dryErr.message);
+          }
+        }
       }
     }
     sendEvent('done', donePayload);

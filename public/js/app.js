@@ -612,14 +612,20 @@ async function sendMessage() {
           } else if (event.type === 'done') {
             aiText = event.text || aiText;
             updateAIBubble(aiMsgId, aiText);
+
+            // ── Stack selector trigger ──────────────────────────────
+            if (event.showStackSelector) {
+              renderStackSelector(aiMsgId);
+            }
+
             // Carry context for post-stream handling
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
             } else if (event.downloadable) {
               finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx', pptPurpose: event.pptPurpose || null };
             } else if (event.build) {
-              // Backend confirmed this is a build response — carry the pre-parsed repoName
-              finalText = { text: aiText, build: true, repoName: event.repoName || null };
+              // Backend confirmed this is a build response — carry dry-run & deploy-mode hints
+              finalText = { text: aiText, build: true, repoName: event.repoName || null, dryRun: event.dryRun || null, deployMode: event.deployMode || null };
             } else {
               finalText = aiText;
             }
@@ -641,8 +647,8 @@ async function sendMessage() {
       } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
         showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat, finalText.pptPurpose);
       } else if (finalText && typeof finalText === 'object' && finalText.build) {
-        // Backend confirmed build — pass server-side repoName hint to checkForCode
-        checkForCode(finalText.text, finalText.repoName);
+        // Backend confirmed build — pass server-side repoName hint and dry-run result
+        checkForCode(finalText.text, finalText.repoName, finalText.dryRun, finalText.deployMode);
       } else {
         checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
       }
@@ -734,7 +740,9 @@ function setStatus(text, thinking = false) {
 
 // ── Code detection & auto-deploy ─────────────────────────────────
 // hintRepoName — optional pre-parsed value from the backend done event (more reliable)
-function checkForCode(text, hintRepoName) {
+// dryRun      — { passed, issues, summary } from server-side validation
+// deployMode  — 'github-pages' | 'local' | 'manual'
+function checkForCode(text, hintRepoName, dryRun, deployMode) {
   if (!text) return;
 
   // Extract REPO_NAME — prefer the server-side hint (more reliable than regex on large text)
@@ -792,7 +800,7 @@ function checkForCode(text, hintRepoName) {
 
   if (!files.length) return; // nothing useful to deploy
 
-  showDeployPrompt(repoName, files);
+  showDeployPrompt(repoName, files, dryRun, deployMode);
 }
 
 // ── Download options card (conversion mode) ──────────────────────
@@ -1034,7 +1042,7 @@ function loadPendingBuild() {
   } catch (_) { return null; }
 }
 
-function showDeployPrompt(repoName, files) {
+function showDeployPrompt(repoName, files, dryRun, deployMode) {
   // Persist so the user doesn't lose their build on refresh / server restart
   savePendingBuild(repoName, files);
 
@@ -1044,18 +1052,44 @@ function showDeployPrompt(repoName, files) {
   const container = document.getElementById('chatMessages');
   const div = document.createElement('div');
   div.style.cssText = 'padding:16px 0;max-width:780px;align-self:flex-start;width:100%;';
+
+  // ── Dry-run badge ─────────────────────────────────────────────
+  let dryRunBadge = '';
+  if (dryRun) {
+    const col   = dryRun.passed ? '#4ade80' : '#fbbf24';
+    const icon  = dryRun.passed ? '✅' : '⚠️';
+    const issues = dryRun.issues?.length
+      ? `<div style="margin-top:6px;font-size:12px;color:#fbbf24;">${dryRun.issues.map(i => `• ${escapeHtml(i)}`).join('<br>')}</div>`
+      : '';
+    dryRunBadge = `<div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;
+      background:${dryRun.passed ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)'};
+      border:1px solid ${col};font-size:12px;color:${col};margin-bottom:14px;">
+      ${icon} ${escapeHtml(dryRun.summary)}
+    </div>${issues}`;
+  }
+
+  // ── CTA based on deploy mode ──────────────────────────────────
+  let ctaLabel, ctaDesc;
+  if (deployMode === 'local') {
+    ctaLabel = '🚀 Push to GitHub + Launch Locally';
+    ctaDesc  = `Ready4Launch will push your code to <strong>${repoName}</strong>, then automatically start the app in a new terminal window.`;
+  } else if (deployMode === 'manual') {
+    ctaLabel = '📁 Push to GitHub';
+    ctaDesc  = `Your code will be pushed to <strong>${repoName}</strong>. Check the README for setup instructions specific to your stack.`;
+  } else {
+    ctaLabel = '🌐 Deploy to GitHub Pages';
+    ctaDesc  = `Ready4Launch will create <strong>${repoName}</strong>, push your code, and enable GitHub Pages — your site will be live in ~2 minutes.`;
+  }
+
   div.innerHTML = `
     <div style="background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.25);border-radius:14px;padding:24px;">
-      <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready to deploy!</div>
-      <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-        Ready4Launch will create a new public GitHub repository called
-        <strong style="color:var(--purple-light);">${repoName}</strong>,
-        push your code, and enable GitHub Pages — automatically.
-      </p>
+      <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready!</div>
+      ${dryRunBadge}
+      <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">${ctaDesc}</p>
       <button data-fileid="${fileId}" onclick="deployToGitHub(this.dataset.fileid, this)"
               style="background:var(--grad-main);color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;font-family:var(--font);">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        Deploy to GitHub Pages
+        ${ctaLabel}
       </button>
     </div>
   `;
@@ -1687,4 +1721,77 @@ async function buildAndroidApk(promptId, repoName, encodedAppName, encodedPagesU
       </div>`;
   }
   scrollToBottom();
+}
+// ── Stack selector UI ─────────────────────────────────────────────
+
+const STACK_OPTIONS = {
+  frontend: [
+    { id: 'html',    label: 'HTML / CSS / Vanilla JS' },
+    { id: 'react',   label: 'React' },
+    { id: 'vue',     label: 'Vue.js' },
+    { id: 'angular', label: 'Angular' },
+    { id: 'svelte',  label: 'Svelte' },
+    { id: 'nextjs',  label: 'Next.js' },
+    { id: 'nuxtjs',  label: 'Nuxt.js' },
+  ],
+  backend: [
+    { id: 'none',     label: 'No backend' },
+    { id: 'nodejs',   label: 'Node.js + Express' },
+    { id: 'python',   label: 'Python (FastAPI / Flask)' },
+    { id: 'java',     label: 'Java (Spring Boot)' },
+    { id: 'csharp',   label: 'C# (.NET)' },
+    { id: 'php',      label: 'PHP (Laravel)' },
+    { id: 'go',       label: 'Go' },
+    { id: 'ruby',     label: 'Ruby on Rails' },
+    { id: 'rust',     label: 'Rust' },
+  ],
+  type: [
+    { id: 'static',   label: 'Static Website', desc: 'HTML/CSS only' },
+    { id: 'dynamic',  label: 'Dynamic Web App', desc: 'Data changes from database' },
+    { id: 'spa',      label: 'Single Page App (SPA)', desc: 'React, Angular, Vue' },
+    { id: 'ssr',      label: 'Server-Side Rendered', desc: 'Next.js, Nuxt.js' },
+    { id: 'pwa',      label: 'Progressive Web App', desc: 'Behaves like native app' },
+    { id: 'jamstack', label: 'JAMstack', desc: 'Static frontend + APIs' },
+  ],
+};
+
+function renderStackSelector(aiMsgId) {
+  const bubble = document.getElementById(`${aiMsgId}-bubble`);
+  if (!bubble) return;
+
+  const card = document.createElement('div');
+  card.className = 'stack-selector-card';
+  card.style.cssText = `margin-top:16px;padding:20px;border-radius:12px;
+    background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-family:var(--font);`;
+
+  window._stackFrontend = 'html';
+  window._stackBackend  = 'none';
+  window._stackType     = 'static';
+
+  const renderGroup = (label, options, varName) => {
+    const opts = options.map(opt => `
+      <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+        <input type="radio" name="${varName}" value="${opt.id}" onchange="window._stack${varName.charAt(0).toUpperCase()+varName.slice(1)}='${opt.id}'" style="cursor:pointer;margin:0;" ${opt.id === ('html'|'none'|'static') ? 'checked' : ''} />
+        <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+      </label>
+    `).join('');
+    return `<div style="margin-bottom:14px;"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">${label}</div><div style="margin-left:4px;">${opts}</div></div>`;
+  };
+
+  card.innerHTML = `<div style="margin-bottom:16px;"><h3 style="margin:0 0 12px;font-size:14px;font-weight:700;">Choose Your Tech Stack</h3></div>
+    ${renderGroup('Frontend Framework', STACK_OPTIONS.frontend, 'frontend')}
+    ${renderGroup('Backend Server', STACK_OPTIONS.backend, 'backend')}
+    ${renderGroup('Website Type', STACK_OPTIONS.type, 'type')}
+    <button onclick="submitStackSelection('${aiMsgId}')" style="width:100%;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);margin-top:12px;">Build with this stack →</button>`;
+
+  bubble.appendChild(card);
+  scrollToBottom();
+}
+
+function submitStackSelection(aiMsgId) {
+  const frontend = window._stackFrontend || 'html';
+  const backend  = window._stackBackend  || 'none';
+  const type     = window._stackType     || 'static';
+  const msg = `__STACK__:${JSON.stringify({ frontend, backend, type })}`;
+  sendMessage(msg);
 }
