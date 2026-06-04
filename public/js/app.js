@@ -1828,14 +1828,17 @@ function renderStackSelector(aiMsgId) {
   // Build HTML with proper radio structure
   let html = `<div style="margin-bottom:16px;"><h3 style="margin:0 0 12px;font-size:14px;font-weight:700;">Choose Your Tech Stack</h3></div>`;
 
-  // Frontend
+  // Frontend with hints
   html += `<div style="margin-bottom:14px;">
     <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Frontend Framework</div>
     <div style="margin-left:4px;">`;
   STACK_OPTIONS.frontend.forEach(opt => {
     html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
       <input type="radio" name="frontend" value="${opt.id}" ${opt.id === 'html' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
-      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+      <div style="flex:1;">
+        <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+        <div style="font-size:10px;color:var(--text-3);margin-top:2px;">Backend: ${BACKEND_FOR_FRONTEND[opt.id]}</div>
+      </div>
     </label>`;
   });
   html += `</div></div>`;
@@ -1865,10 +1868,10 @@ function renderStackSelector(aiMsgId) {
   });
   html += `</div></div>`;
 
-  // Hint box
-  html += `<div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);
+  // Validation hint box (will be updated dynamically)
+  html += `<div id="stackHint" style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);
     border-radius:8px;padding:10px;margin-bottom:14px;font-size:11px;color:var(--text-2);">
-    <strong>💡 Tip:</strong> Next.js/Nuxt require Node.js. React/Vue work with any backend or standalone.
+    ✅ Valid combination
   </div>`;
 
   // Build button
@@ -1877,9 +1880,35 @@ function renderStackSelector(aiMsgId) {
     cursor:pointer;font-family:var(--font);">Build with this stack →</button>`;
 
   card.innerHTML = html;
-
-  // Add event listeners AFTER DOM insertion
   bubble.appendChild(card);
+
+  // Helper to update hint box
+  const updateHint = () => {
+    const frontend = window._stackFrontend || 'html';
+    const backend = window._stackBackend || 'none';
+    const type = window._stackType || 'static';
+    const validation = isValidStackCombination(frontend, backend, type);
+    const hintEl = card.querySelector('#stackHint');
+    const btnEl = card.querySelector('#stackBuildBtn');
+
+    if (validation.valid) {
+      hintEl.style.background = 'rgba(34,197,94,0.08)';
+      hintEl.style.borderColor = 'rgba(34,197,94,0.2)';
+      hintEl.style.color = 'var(--text-2)';
+      hintEl.innerHTML = '✅ Valid combination - ready to build!';
+      btnEl.style.opacity = '1';
+      btnEl.disabled = false;
+      btnEl.style.cursor = 'pointer';
+    } else {
+      hintEl.style.background = 'rgba(248,113,113,0.08)';
+      hintEl.style.borderColor = 'rgba(248,113,113,0.2)';
+      hintEl.style.color = '#f87171';
+      hintEl.innerHTML = `❌ ${validation.reason}`;
+      btnEl.style.opacity = '0.6';
+      btnEl.disabled = true;
+      btnEl.style.cursor = 'not-allowed';
+    }
+  };
 
   // Bind radio button changes
   const frontendRadios = card.querySelectorAll('input[name="frontend"]');
@@ -1889,18 +1918,21 @@ function renderStackSelector(aiMsgId) {
   frontendRadios.forEach(input => {
     input.addEventListener('change', (e) => {
       window._stackFrontend = e.target.value;
+      updateHint();
     });
   });
 
   backendRadios.forEach(input => {
     input.addEventListener('change', (e) => {
       window._stackBackend = e.target.value;
+      updateHint();
     });
   });
 
   typeRadios.forEach(input => {
     input.addEventListener('change', (e) => {
       window._stackType = e.target.value;
+      updateHint();
     });
   });
 
@@ -1912,13 +1944,55 @@ function renderStackSelector(aiMsgId) {
     });
   }
 
+  // Initial validation check
+  updateHint();
   scrollToBottom();
+}
+
+// ── Stack validation rules ────────────────────────────────────────
+const STACK_COMPATIBILITY = {
+  html:    { backends: ['none'], types: ['static', 'jamstack'] },
+  react:   { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  vue:     { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  angular: { backends: ['nodejs', 'java', 'csharp', 'python'], types: ['spa', 'dynamic'] },
+  svelte:  { backends: ['nodejs', 'python', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  nextjs:  { backends: ['nodejs'], types: ['ssr', 'dynamic'] },
+  nuxtjs:  { backends: ['nodejs', 'python'], types: ['ssr', 'dynamic'] },
+};
+
+const BACKEND_FOR_FRONTEND = {
+  html:    'Static (no backend needed)',
+  react:   'Optional (Node.js, Python, Java, Go)',
+  vue:     'Optional (Node.js, Python, Java, Go)',
+  angular: 'Required (Node.js, Java, C#, Python)',
+  svelte:  'Optional (Node.js, Python, Go)',
+  nextjs:  'Required (Node.js only)',
+  nuxtjs:  'Required (Node.js, Python)',
+};
+
+function isValidStackCombination(frontend, backend, type) {
+  const rules = STACK_COMPATIBILITY[frontend];
+  if (!rules) return { valid: false, reason: 'Unknown frontend' };
+  if (!rules.backends.includes(backend)) {
+    return { valid: false, reason: `${frontend} doesn't work with ${backend}. Compatible: ${rules.backends.join(', ')}` };
+  }
+  if (!rules.types.includes(type)) {
+    return { valid: false, reason: `${frontend} doesn't work as ${type}. Compatible: ${rules.types.join(', ')}` };
+  }
+  return { valid: true, reason: null };
 }
 
 function submitStackSelection(aiMsgId) {
   const frontend = window._stackFrontend || 'html';
   const backend  = window._stackBackend  || 'none';
   const type     = window._stackType     || 'static';
+
+  const validation = isValidStackCombination(frontend, backend, type);
+  if (!validation.valid) {
+    alert(`❌ Invalid combination:\n\n${validation.reason}`);
+    return;
+  }
+
   const msg = `__STACK__:${JSON.stringify({ frontend, backend, type })}`;
   sendMessage(msg);
 }
