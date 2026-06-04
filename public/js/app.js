@@ -2,6 +2,9 @@
 
 let isStreaming = false;
 let isNewConversation = true;
+// Track which welcome-card mode the user clicked (null = unset / 'build' / 'convert' / 'chat').
+// Sent to the backend on the FIRST message so intent routing is always accurate.
+let _welcomeMode = null;
 const pendingFiles = new Map(); // fileId → { repoName, files }
 let fileIdCounter = 0;
 let _userAuthenticated = false; // set by loadUser(); controls welcome card visibility
@@ -219,6 +222,9 @@ function showWelcomeCards() {
  * Others   → reveal prompt bar immediately with an appropriate placeholder.
  */
 function startWithMode(mode) {
+  // Remember which card the user clicked so we can pass it as a backend hint
+  // on the first message (prevents "make me a resume" being routed to build mode).
+  _welcomeMode = mode;
   const cards = document.getElementById('welcomeCards');
 
   if (mode === 'build') {
@@ -523,6 +529,13 @@ async function sendMessage() {
       message: text || '(see attached file)',
       newConversation: isNewConversation,
     };
+    // Pass the welcome-card mode as a hint on the very first message so the backend
+    // doesn't have to guess intent from keywords alone (e.g. "make me a resume"
+    // should route to conversion, not the app-builder state machine).
+    if (isNewConversation && _welcomeMode && _welcomeMode !== 'build') {
+      body.modeHint = _welcomeMode;
+    }
+    _welcomeMode = null; // clear after first use regardless
     if (editModeActive) {
       body.editMode   = true;
       body.editOwner  = editModeActive.owner;
@@ -854,7 +867,13 @@ async function downloadAs(btn, format, content, aiMsgId, pptPurpose) {
     const res = await fetch('/api/convert-file', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, format, filename, purposeKey: pptPurpose || undefined }),
+      body: JSON.stringify({
+        content,
+        format,
+        filename,
+        purposeKey: pptPurpose || undefined,
+        userName: document.getElementById('userName')?.textContent?.trim() || undefined,
+      }),
     });
 
     if (!res.ok) {
