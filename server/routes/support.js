@@ -15,12 +15,12 @@
  *
  * Required Render env vars:
  *   GMAIL_USER, GMAIL_APP_PASSWORD   — Gmail SMTP for outbound email
- *   GITHUB_TOKEN                     — GitHub PAT with `repo` scope on karnkeshav/texttoapp
+ *   GITHUB_TOKEN                     — GitHub PAT with `repo` scope on karnkeshav/texttoapp_test
  *   GEMINI_API_KEY                   — already used by the rest of the app
  *
  * GITHUB_TOKEN setup (one-time):
  *   1. github.com → Settings → Developer settings → Personal access tokens → Fine-grained
- *   2. Repository access: karnkeshav/texttoapp
+ *   2. Repository access: karnkeshav/texttoapp_test
  *   3. Permissions: Contents = read+write, Pull requests = read+write, Issues = read+write
  *   4. Copy the token → add to Render env vars as GITHUB_TOKEN
  */
