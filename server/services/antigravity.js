@@ -9,6 +9,9 @@
 
 const axios = require('axios');
 const { pooledStream } = require('./geminiPool');
+const { groqStream }       = require('./groqPool');
+const { cerebrasStream }   = require('./cerebrasPool');
+const { sambanovaStream }  = require('./sambanovaPool');
 
 // ── Circuit breaker (module-level — shared across all requests) ───
 // When Antigravity returns 429 the breaker "trips" and all subsequent
@@ -342,6 +345,17 @@ function buildContents(history, newUserMessage) {
   ];
 }
 
+// ── Build enriched contents for fallback pools ────────────────────
+// Mirrors the contextualMessage logic inside streamFromGeminiPool so
+// Groq/Cerebras/SambaNova receive the same plan-context enrichment.
+function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
+  let msg = newUserMessage;
+  if (enrichedNotes && enrichedNotes !== 'No additional context.') {
+    msg = `── PLAN CONTEXT ──\n${enrichedNotes}\n──────────────────\n\n${newUserMessage}`;
+  }
+  return buildContents(history, msg);
+}
+
 // ── Extract text from Antigravity SSE event ───────────────────────
 function extractText(event) {
   if (!event || typeof event !== 'object') return null;
@@ -430,6 +444,58 @@ async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, on
   });
 }
 
+// ── Groq → Cerebras → SambaNova fallback chain ───────────────────
+// Called when Gemini pool is exhausted. Each pool throws with a specific
+// error code so we can distinguish "exhausted" from "unexpected error".
+async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone) {
+  const contents = buildEnrichedContents(history, newUserMessage, enrichedNotes);
+
+  // ── Groq pool ─────────────────────────────────────────────────
+  try {
+    await groqStream({
+      contents,
+      config:            { temperature: 0.7, maxOutputTokens: 32768 },
+      apiKey:            process.env.GROQ_API_KEY,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      onChunk,
+      onDone,
+    });
+    console.log('[AI] Groq pool ✅');
+    return;
+  } catch (groqErr) {
+    if (groqErr.code !== 'GROQ_POOL_EXHAUSTED') throw groqErr;
+    console.warn('[AI] Groq pool exhausted — trying Cerebras pool');
+  }
+
+  // ── Cerebras pool ─────────────────────────────────────────────
+  try {
+    await cerebrasStream({
+      contents,
+      config:            { temperature: 0.7, maxOutputTokens: 8192 },
+      apiKey:            process.env.CEREBRAS_API_KEY,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      onChunk,
+      onDone,
+    });
+    console.log('[AI] Cerebras pool ✅');
+    return;
+  } catch (cerebrasErr) {
+    if (cerebrasErr.code !== 'CEREBRAS_POOL_EXHAUSTED') throw cerebrasErr;
+    console.warn('[AI] Cerebras pool exhausted — trying SambaNova pool');
+  }
+
+  // ── SambaNova pool (final fallback) ───────────────────────────
+  await sambanovaStream({
+    contents,
+    config:            { temperature: 0.7, maxOutputTokens: 8192 },
+    apiKey:            process.env.SAMBANOVA_API_KEY,
+    systemInstruction: SYSTEM_INSTRUCTION,
+    onChunk,
+    onDone,
+  });
+  console.log('[AI] SambaNova pool ✅');
+}
+
 // ── Main entry point ──────────────────────────────────────────────
 async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone, enrichedNotes = '') {
   const apiKey  = process.env.GEMINI_API_KEY;
@@ -440,8 +506,16 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
   // ── Circuit breaker: skip Antigravity while cooling down after a 429 ──
   if (antigravityBreaker.isOpen()) {
     console.log(`[AI] Antigravity breaker open (${antigravityBreaker.remainingSeconds()}s left) — routing to Gemini pool`);
-    await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
-    console.log('[AI] Gemini pool ✅');
+    try {
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      console.log('[AI] Gemini pool ✅');
+      return;
+    } catch (geminiErr) {
+      if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
+      console.warn('[AI] Gemini pool exhausted — trying Groq pool');
+    }
+    // Gemini exhausted — fall through to Groq → Cerebras → SambaNova
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
     return;
   }
 
@@ -458,8 +532,15 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
       console.warn(`[AI] Antigravity ${statusLabel} (${err.message}) — falling back to Gemini pool`);
     }
     // Always fall back — Gemini pool has its own retry logic across many models
-    await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
-    console.log('[AI] Gemini pool ✅');
+    try {
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      console.log('[AI] Gemini pool ✅');
+      return;
+    } catch (geminiErr) {
+      if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
+      console.warn('[AI] Gemini pool exhausted — trying Groq pool');
+    }
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
   }
 }
 

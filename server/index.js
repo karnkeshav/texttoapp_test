@@ -89,6 +89,9 @@ app.get('/api/diagnose', async (req, res) => {
     antigravity_agent:      process.env.ANTIGRAVITY_AGENT_ID || null,
     backend_origin:         process.env.BACKEND_ORIGIN || null,
     gemini_pool:            poolStatus(),
+    groq_pool:       process.env.GROQ_API_KEY      ? require('./services/groqPool').groqPoolStatus()           : 'not configured',
+    cerebras_pool:   process.env.CEREBRAS_API_KEY  ? require('./services/cerebrasPool').cerebrasPoolStatus()   : 'not configured',
+    sambanova_pool:  process.env.SAMBANOVA_API_KEY ? require('./services/sambanovaPool').sambanovaPoolStatus()  : 'not configured',
     gemini_live_test:       null,
     antigravity_live_test:  null,
   };
