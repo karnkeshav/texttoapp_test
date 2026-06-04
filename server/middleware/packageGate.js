@@ -50,15 +50,16 @@ function quickSection(message, isImage, isEdit) {
 async function checkGate(req, section, newConv) {
   const uid = uidFromSession(req.session);
 
+  // AUTH DISABLED — auth check commented out; all requests pass through
   // ── 1. Must be authenticated ─────────────────────────────────────
-  if (!uid) {
-    return {
-      ok:      false,
-      status:  401,
-      error:   'not_authenticated',
-      message: 'Please sign in to use Ready4Launch.',
-    };
-  }
+  // if (!uid) {
+  //   return {
+  //     ok:      false,
+  //     status:  401,
+  //     error:   'not_authenticated',
+  //     message: 'Please sign in to use Ready4Launch.',
+  //   };
+  // }
 
   // ── 1b. Owner accounts — bypass all restrictions ─────────────────
   const userEmail = req.session?.googleUser?.email || req.session?.user?.email || null;

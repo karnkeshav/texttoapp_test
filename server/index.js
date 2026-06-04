@@ -2,7 +2,8 @@ require('dotenv').config();
 const express = require('express');
 const session = require('express-session');
 const path = require('path');
-const { FirestoreSessionStore } = require('./services/firestoreSessionStore');
+// AUTH DISABLED — uncomment to re-enable Firestore session persistence
+// const { FirestoreSessionStore } = require('./services/firestoreSessionStore');
 
 const authRoutes    = require('./routes/auth');
 const chatRoutes    = require('./routes/chat');
@@ -29,9 +30,8 @@ app.use(
     secret: process.env.SESSION_SECRET || 'dev-secret-change-me',
     resave: false,
     saveUninitialized: false,
-    // Use Firestore-backed store so sessions survive server restarts on Render free tier.
-    // Falls back to MemoryStore behaviour (all ops no-op) when Firestore is not configured.
-    store: new FirestoreSessionStore(),
+    // AUTH DISABLED — Firestore session store commented out; using default MemoryStore
+    // store: new FirestoreSessionStore(),
     cookie: {
       secure: process.env.NODE_ENV === 'production',
       httpOnly: true,
@@ -130,12 +130,16 @@ app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'index.html'));
 });
 
-// /app requires a session (Google or GitHub) — redirect guests to the landing page.
+// AUTH DISABLED — /app is open to all (no session required)
+// Original auth guard commented out:
+// app.get('/app', (req, res) => {
+//   const authed =
+//     !!req.session?.googleUser?.uid ||
+//     !!(req.session?.githubToken && req.session?.user?.login);
+//   if (!authed) return res.redirect('/');
+//   res.sendFile(path.join(__dirname, '..', 'public', 'app.html'));
+// });
 app.get('/app', (req, res) => {
-  const authed =
-    !!req.session?.googleUser?.uid ||
-    !!(req.session?.githubToken && req.session?.user?.login);
-  if (!authed) return res.redirect('/');
   res.sendFile(path.join(__dirname, '..', 'public', 'app.html'));
 });
 

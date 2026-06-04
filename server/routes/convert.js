@@ -19,7 +19,7 @@ const ALLOWED_FORMATS = new Set(['docx', 'xlsx', 'pptx', 'pdf', 'csv', 'json']);
 function requireAuth(_req, _res, next) { next(); }
 
 router.post('/convert-file', requireAuth, async (req, res) => {
-  const { content, format, filename = 'document', purposeKey } = req.body;
+  const { content, format, filename = 'document', purposeKey, userName } = req.body;
 
   if (!content || typeof content !== 'string' || !content.trim()) {
     return res.status(400).json({ error: 'content is required' });
@@ -37,7 +37,7 @@ router.post('/convert-file', requireAuth, async (req, res) => {
     .slice(0, 80) || 'document';
 
   try {
-    const { buffer, mimeType, ext } = await convert(content, fmt, safeName, { purposeKey });
+    const { buffer, mimeType, ext } = await convert(content, fmt, safeName, { purposeKey, userName });
 
     res.setHeader('Content-Type', mimeType);
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}.${ext}"`);

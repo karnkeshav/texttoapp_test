@@ -481,7 +481,7 @@ const PPT_THEMES = {
 };
 
 // ── PowerPoint (.pptx) ───────────────────────────────────────────────────────
-async function toPptx(elements, purposeKey) {
+async function toPptx(elements, purposeKey, userName) {
   const PptxGenJS = require('pptxgenjs');
   const pptx = new PptxGenJS();
   pptx.layout = 'LAYOUT_WIDE';
@@ -510,6 +510,38 @@ async function toPptx(elements, purposeKey) {
     });
     // Thin bottom accent line
     box(s, 0, SH - 0.08, SW, 0.08, ACCENT);
+  }
+
+  // ── Detect chartable table data ───────────────────────────────
+  // Returns { chartable, chartType, series } when a table has numeric columns.
+  function detectChartable(tbl) {
+    if (!tbl || !tbl.rows || tbl.rows.length < 2) return { chartable: false };
+    const header = tbl.rows[0];
+    if (!header || header.length < 2) return { chartable: false };
+
+    const dataRows = tbl.rows.slice(1);
+
+    // Find columns (index 1+) where ALL data cells are numeric after stripping symbols
+    const numericCols = [];
+    for (let c = 1; c < header.length; c++) {
+      const allNumeric = dataRows.every(r => {
+        const raw = (r[c] || '').toString().trim().replace(/[,%$₹£€\s]/g, '');
+        return raw !== '' && !isNaN(parseFloat(raw));
+      });
+      if (allNumeric) numericCols.push(c);
+    }
+    if (numericCols.length === 0) return { chartable: false };
+
+    const labels = dataRows.map(r => (r[0] || '').toString().trim());
+    const series = numericCols.map(c => ({
+      name:   (header[c] || `Series ${c}`).toString().trim(),
+      labels,
+      values: dataRows.map(r => parseFloat((r[c] || '0').toString().trim().replace(/[,%$₹£€\s]/g, '')) || 0),
+    }));
+
+    // Pie: single series with 2–7 categories; otherwise bar/column
+    const chartType = (series.length === 1 && labels.length >= 2 && labels.length <= 7) ? 'pie' : 'bar';
+    return { chartable: true, chartType, series };
   }
 
   // ── TITLE SLIDE ───────────────────────────────────────────────
@@ -546,9 +578,15 @@ async function toPptx(elements, purposeKey) {
         valign:'top', wrap:true, italic:true,
       });
     }
-    // Date
+    // "Prepared by" + date
+    if (userName) {
+      s.addText(`Prepared by: ${userName}`, {
+        x:1.0, y:SH - 1.05, w:8, h:0.32,
+        fontFace:'Calibri', fontSize:10, bold:true, color:BODY, italic:false,
+      });
+    }
     s.addText(new Date().toLocaleDateString('en-GB',{year:'numeric',month:'long'}), {
-      x:1.0, y:SH - 0.65, w:5, h:0.35,
+      x:1.0, y:SH - 0.65, w:5, h:0.32,
       fontFace:'Calibri', fontSize:9, color:MUTED,
     });
   }
@@ -619,9 +657,9 @@ async function toPptx(elements, purposeKey) {
   function makeContentSlide(title, contentItems, slideNum) {
     const s = pptx.addSlide();
     bgFill(s);
-    box(s, 0, 0, 0.65, SH, ACCENT);    // left accent pillar
-    box(s, 0.65, 0, SW - 0.65, 1.15, TITLE_BAR);  // title bar (ACCENT for light, BG2 for dark)
-    box(s, 0.65, 1.15, SW - 0.65, 0.06, ACCENT);  // accent underline
+    box(s, 0, 0, 0.65, SH, ACCENT);
+    box(s, 0.65, 0, SW - 0.65, 1.15, TITLE_BAR);
+    box(s, 0.65, 1.15, SW - 0.65, 0.06, ACCENT);
 
     if (title) {
       s.addText(title, {
@@ -634,16 +672,29 @@ async function toPptx(elements, purposeKey) {
     const CY = 1.35;
     const CH = SH - CY - 0.45;
 
-    const tables  = contentItems.filter(i => i.type === 'table');
-    const nonTbls = contentItems.filter(i => i.type !== 'table');
-    const hasBoth = tables.length > 0 && nonTbls.length > 0;
+    const tables     = contentItems.filter(i => i.type === 'table');
+    const nonTbls    = contentItems.filter(i => i.type !== 'table');
+    const chartables = tables.map(t => detectChartable(t));
 
-    // ── Left / full-width text column ─────────────────────────
-    const textX = 0.85;
-    const textW = hasBoth ? 5.8 : SW - 1.0;
-    const tblX  = hasBoth ? 7.0 : 0.85;
-    const tblW  = hasBoth ? SW - 7.2 : SW - 1.0;
+    // Count individual text items to decide whether to add filler panel
+    const totalTextItems = nonTbls.reduce((sum, item) => {
+      if (item.type === 'bullets' || item.type === 'numbered') return sum + item.items.length;
+      return sum + 1;
+    }, 0);
 
+    const hasTbl          = tables.length > 0;
+    const hasBoth         = hasTbl && nonTbls.length > 0;
+    // Show a "Key Insight" decorative panel on the right when the slide has
+    // only sparse text (≤ 6 items) and no table/chart — fills the empty space.
+    const showInsightPanel = !hasTbl && nonTbls.length > 0 && totalTextItems <= 6;
+    const splitLayout      = hasTbl || showInsightPanel;
+
+    const textX  = 0.85;
+    const textW  = splitLayout ? 5.8  : SW - 1.0;
+    const rightX = splitLayout ? 7.0  : 0.85;
+    const rightW = splitLayout ? SW - 7.2 : SW - 1.0;
+
+    // ── Text column ────────────────────────────────────────────
     if (nonTbls.length > 0) {
       const lines = [];
       for (const item of nonTbls) {
@@ -676,38 +727,130 @@ async function toPptx(elements, purposeKey) {
       }
     }
 
-    // ── Table column ──────────────────────────────────────────
-    // Header: always ACCENT bg + white text for strong contrast on any theme
-    // Alt rows: BG2 / BG3 — subtle on light themes, visible on dark
-    const tblAlt1 = isDark ? BG3 : BG2;
-    const tblAlt2 = isDark ? '132038' : BG3;
-    let ty = CY;
-    tables.forEach(tbl => {
-      const cols = tbl.rows[0] ? tbl.rows[0].length : 1;
-      const cw   = tblW / cols;
-      const rows = tbl.rows.map((row, ri) =>
-        row.map(cell => ({
-          text: cell || '',
-          options:{
-            fontFace:'Calibri', fontSize:10, bold: ri === 0,
-            color: ri === 0 ? WHITE : BODY,
-            fill:  ri === 0 ? ACCENT : (ri % 2 === 0 ? tblAlt1 : tblAlt2),
-            align:'left', valign:'middle',
-            margin:[4,8,4,8],
-            border:[
-              {type:'solid', pt:0.5, color:BG3},
-              {type:'solid', pt:0.5, color:BG3},
-              {type:'solid', pt:0.5, color:BG3},
-              {type:'solid', pt:0.5, color:BG3},
-            ],
-          },
-        }))
-      );
-      s.addTable(rows, { x:tblX, y:ty, w:tblW, colW:Array(cols).fill(cw), rowH:0.32 });
-      ty += tbl.rows.length * 0.34 + 0.2;
-    });
+    // ── Key Insight panel (sparse text-only slides) ────────────
+    if (showInsightPanel) {
+      const px = rightX, py = CY, pw = rightW, ph = CH;
+      box(s, px, py, pw, ph, BG2);
+      box(s, px, py, 0.06, ph, ACCENT2);
+      s.addText('KEY INSIGHT', {
+        x: px + 0.2, y: py + 0.18, w: pw - 0.3, h: 0.38,
+        fontFace:'Calibri', fontSize:8, bold:true, color:ACCENT2, charSpacing:3,
+      });
+      box(s, px + 0.2, py + 0.6, pw - 0.4, 0.04, ACCENT2);
+      s.addText(title || 'Key Takeaway', {
+        x: px + 0.2, y: py + 0.75, w: pw - 0.3, h: ph - 1.0,
+        fontFace:'Calibri', fontSize:14, bold:true,
+        color: isDark ? WHITE : ACCENT,
+        valign:'top', wrap:true, lineSpacingMultiple:1.3,
+      });
+    }
+
+    // ── Tables / Charts ────────────────────────────────────────
+    if (hasTbl) {
+      const tblAlt1 = isDark ? BG3 : BG2;
+      const tblAlt2 = isDark ? '132038' : BG3;
+      // Chart colours — accent first so they match the slide theme
+      const chartColors = [ACCENT, ACCENT2, '4CAF50', 'FF9800', '9C27B0', 'F44336'];
+      // When there's no text content, charts/tables expand to full slide width
+      const panelX = hasBoth ? rightX : 0.85;
+      const panelW = hasBoth ? rightW : SW - 1.0;
+      let ty = CY;
+
+      tables.forEach((tbl, ti) => {
+        const cd      = chartables[ti];
+        const remainH = (CY + CH) - ty;
+        const chartH  = Math.min(remainH - 0.05, CH * 0.9);
+
+        if (cd.chartable && chartH > 0.8) {
+          // ── Render as bar / pie chart ────────────────────────
+          const chartOpts = {
+            x: panelX, y: ty, w: panelW, h: chartH,
+            chartColors,
+            showLegend: true, legendPos: 'b', legendFontSize: 9,
+            showTitle: false,
+            dataLabelFontSize: 8,
+            valAxisLabelFontSize: 8,
+            catAxisLabelFontSize: 8,
+          };
+          if (cd.chartType === 'pie') {
+            s.addChart(pptx.ChartType.pie, cd.series, chartOpts);
+          } else {
+            s.addChart(pptx.ChartType.bar, cd.series,
+              { ...chartOpts, barDir: 'col', barGrouping: 'clustered' });
+          }
+          ty += chartH + 0.15;
+        } else {
+          // ── Fallback: render as styled table ─────────────────
+          const cols  = tbl.rows[0] ? tbl.rows[0].length : 1;
+          const colW  = panelW / cols;
+          const rows  = tbl.rows.map((row, ri) =>
+            row.map(cell => ({
+              text: cell || '',
+              options:{
+                fontFace:'Calibri', fontSize:10, bold: ri === 0,
+                color: ri === 0 ? WHITE : BODY,
+                fill:  ri === 0 ? ACCENT : (ri % 2 === 0 ? tblAlt1 : tblAlt2),
+                align:'left', valign:'middle',
+                margin:[4,8,4,8],
+                border:[
+                  {type:'solid', pt:0.5, color:BG3},
+                  {type:'solid', pt:0.5, color:BG3},
+                  {type:'solid', pt:0.5, color:BG3},
+                  {type:'solid', pt:0.5, color:BG3},
+                ],
+              },
+            }))
+          );
+          s.addTable(rows, { x:panelX, y:ty, w:panelW, colW:Array(cols).fill(colW), rowH:0.32 });
+          ty += tbl.rows.length * 0.34 + 0.2;
+        }
+      });
+    }
 
     footer(s, slideNum);
+  }
+
+  // ── THANK YOU SLIDE ───────────────────────────────────────────
+  function makeThankYouSlide() {
+    const s = pptx.addSlide();
+    bgFill(s);
+    // Left accent pillar
+    box(s, 0, 0, 0.65, SH, ACCENT);
+    // Decorative circles — mirror the title slide
+    s.addShape(pptx.ShapeType.ellipse, {
+      x: SW - 2.8, y: -1.4, w: 4.2, h: 4.2,
+      fill:{ color:BG2 }, line:{ color:BG2 },
+    });
+    s.addShape(pptx.ShapeType.ellipse, {
+      x: SW - 1.8, y: SH - 2.0, w: 3.0, h: 3.0,
+      fill:{ color:BG3 }, line:{ color:BG3 },
+    });
+    // "Thank You" headline
+    const titleColor = isDark ? WHITE : ACCENT;
+    s.addText('Thank You', {
+      x:1.0, y:1.6, w:10.5, h:2.4,
+      fontFace:'Calibri', fontSize:54, bold:true, color:titleColor,
+      valign:'middle',
+    });
+    // Accent bar under headline
+    box(s, 1.0, 4.2, 4.5, 0.07, ACCENT);
+    // Tagline
+    s.addText('We appreciate your time and attention.', {
+      x:1.0, y:4.42, w:9.5, h:0.7,
+      fontFace:'Calibri', fontSize:15, color:BODY, italic:true, valign:'top',
+    });
+    // "Presented by" if we have a username
+    if (userName) {
+      s.addText(`Presented by: ${userName}`, {
+        x:1.0, y:5.3, w:8, h:0.35,
+        fontFace:'Calibri', fontSize:11, bold:true, color:BODY,
+      });
+    }
+    // Date
+    s.addText(new Date().toLocaleDateString('en-GB',{year:'numeric',month:'long'}), {
+      x:1.0, y:SH - 0.65, w:5, h:0.32,
+      fontFace:'Calibri', fontSize:9, color:MUTED,
+    });
   }
 
   // ── Parse Markdown elements → presentation structure ──────────
@@ -771,11 +914,10 @@ async function toPptx(elements, purposeKey) {
     }) }] });
   }
 
-  // ── Hard cap: 10 total slides (title counts as 1) ─────────────
-  // Count potential slides: 1 (title) + 1 (agenda if >1 section) +
-  // per section: 1 divider + N content slides.
-  // Trim sections/slides until we fit within 10.
-  const MAX_SLIDES = 10;
+  // ── Hard cap: 12 content slides (+ mandatory title + thank-you) ─
+  // Count: 1 (title) + 1 (agenda if >1 sec) + per-section: 1 divider + N content.
+  // Thank You slide is always added outside the cap, so cap at 12 here.
+  const MAX_SLIDES = 12;
 
   function countSlides(secs) {
     const hasAgenda = secs.filter(s => s.title).length > 1;
@@ -826,6 +968,9 @@ async function toPptx(elements, purposeKey) {
       slideNum++;
     }
   }
+
+  // Always end with a Thank You slide
+  makeThankYouSlide();
 
   return pptx.write({ outputType: 'nodebuffer' });
 }
@@ -1083,7 +1228,7 @@ async function convert(content, format, filename = 'document', options = {}) {
   switch (format) {
     case 'docx': buffer = await toDocx(elements); break;
     case 'xlsx': buffer = await toXlsx(elements); break;
-    case 'pptx': buffer = await toPptx(elements, options.purposeKey); break;
+    case 'pptx': buffer = await toPptx(elements, options.purposeKey, options.userName); break;
     case 'pdf':  buffer = await toPdf(elements);  break;
     case 'csv':  buffer = toCsv(elements);  break;
     case 'json': buffer = toJson(elements); break;

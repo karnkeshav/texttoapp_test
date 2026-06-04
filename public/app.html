@@ -35,7 +35,7 @@
       </div>
     </div>
 
-    <!-- Connect GitHub prompt (shown when Google-only, no GitHub) -->
+    <!-- AUTH DISABLED — Connect GitHub banner commented out (no OAuth active)
     <div id="connectGithubBanner" style="display:none;margin:0 12px 8px;padding:12px;background:rgba(99,102,241,0.07);border:1px solid rgba(99,102,241,0.2);border-radius:10px;">
       <div style="font-size:12px;font-weight:600;color:var(--purple-light);margin-bottom:4px;">🐙 Connect GitHub to build apps</div>
       <div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">Deploy your apps to GitHub Pages — free, permanent, owned by you.</div>
@@ -45,6 +45,7 @@
       </a>
       <a href="/github-guide" target="_blank" style="display:block;margin-top:8px;font-size:11px;color:var(--text-3);text-decoration:none;">📖 Step-by-step setup guide →</a>
     </div>
+    -->
 
     <!-- Your Apps (only shown when GitHub is connected) -->
     <div id="repoSection" style="flex:1;overflow:hidden;display:flex;flex-direction:column;margin:0 12px 8px;">
@@ -75,10 +76,12 @@
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20c0-4 3.6-7 8-7s8 3 8 7"/></svg>
         My Account
       </a>
+      <!-- AUTH DISABLED — Sign out commented out (no session auth active)
       <a href="/auth/logout" class="sidebar-logout">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>
         Sign out
       </a>
+      -->
     </div>
   </aside>
 

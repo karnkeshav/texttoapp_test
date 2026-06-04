@@ -119,21 +119,37 @@ const REASONING_RE  = /\b(calculate|compute|solve|formula|equation|integral|deri
 // Words that strongly signal the user wants to BUILD something (not just chat)
 const BUILD_SIGNAL_RE = /\b(build|create|make|generate|develop|design|i want (an?|the)|give me (an?|the)|i need (an?|the))\b.{0,50}\b(app|website|site|page|tool|dashboard|tracker|calculator|game|quiz|platform|portal|landing|shop|store)\b/i;
 
-function classifyTopLevelIntent(message) {
+// Document types that signal conversion intent even without an explicit file format keyword.
+// Matches things like "make me a resume", "write a cover letter", "I need a business report".
+// Excluded from this if the same message also contains app/site build signals.
+const DOCUMENT_TYPE_RE = /\b(resume|cv|curriculum vitae|cover letter|business plan|proposal|report|brief|executive summary|invoice|contract|essay|article|research paper|term paper|memo|memorandum|letter|brochure|flyer|presentation|slide ?deck|deck|pitch ?deck)\b/i;
+
+// Conversion escape phrases used in follow-up turns ("no, I want to convert / document / file")
+const CONVERT_ESCAPE_RE = /\b(don'?t|do not|not|no|stop)\b.{0,25}\b(build|app|site|code)\b|\b(convert|document|file|word|pdf|excel|spreadsheet|pptx?|powerpoint)\b.{0,20}\b(it|this|that|please|instead)\b|\b(i (just |only )?(want|need|meant)|actually|instead)\b.{0,30}\b(convert|document|file|word|pdf|excel|resume|report)\b/i;
+
+function classifyTopLevelIntent(message, modeHint) {
+  // Honour an explicit mode hint from the frontend welcome card click.
+  // This means "make me a resume" in convert mode stays as conversion, not build.
+  if (modeHint === 'convert') return 'conversion';
+  if (modeHint === 'chat')    return 'chat';
+
   // Format conversion always wins — very specific signal
   if (CONVERSION_RE.test(message)) return 'conversion';
 
   // Math / logic / numerical reasoning
   if (REASONING_RE.test(message)) return 'reasoning';
 
-  // Explicit build request → state machine
+  // Explicit build request (app / website keywords) → state machine
   if (BUILD_SIGNAL_RE.test(message)) return 'build';
+
+  // Document type without app-build context → conversion
+  // (e.g. "make me a resume", "write a cover letter", "I need a business proposal")
+  if (DOCUMENT_TYPE_RE.test(message) && !BUILD_SIGNAL_RE.test(message)) return 'conversion';
 
   // Conversational question (no repo context) → one-shot chat
   if (isConversationalIntent(message)) return 'chat';
 
   // Pasted code without an explicit build instruction → route to chat
-  // (prevents the app-building state machine from firing on bare code snippets)
   if (looksLikeCode(message)) return 'chat';
 
   // Default: treat as a build request (existing behaviour)
@@ -362,6 +378,7 @@ router.post('/chat', requireAuth, async (req, res) => {
     editRepo,
     editBranch = 'main',
     attachment,   // optional: { fileName, mimeType, data (base64) }
+    modeHint,     // optional: 'convert' | 'chat' — set by frontend when user clicks a welcome card
   } = req.body;
 
   if (!message || typeof message !== 'string' || !message.trim()) {
@@ -432,9 +449,10 @@ router.post('/chat', requireAuth, async (req, res) => {
   // Skipped when: already answering the purpose question, already generating
   // a PPT in the same session (chatPhase==='conversion' + pptPurpose set),
   // or when an attachment is present.
-  const _isPptRequest = !hasAttachment &&
-    CONVERSION_RE.test(trimmedMessage) &&
-    detectConversionFormat(trimmedMessage) === 'pptx';
+  // PPT intent: explicit format keyword OR user clicked Convert card and mentions presentation/slides
+  const _isPptByKeyword  = CONVERSION_RE.test(trimmedMessage) && detectConversionFormat(trimmedMessage) === 'pptx';
+  const _isPptByModeHint = modeHint === 'convert' && /\b(presentation|slide ?deck|deck|pitch ?deck|ppt|powerpoint|slides?)\b/i.test(trimmedMessage);
+  const _isPptRequest    = !hasAttachment && (_isPptByKeyword || _isPptByModeHint);
   const _inPptPurposeFlow = req.session.chatPhase === 'ppt_purpose';
   const _pptAlreadyAnswered = req.session.chatPhase === 'conversion' &&
     req.session.conversionFormat === 'pptx' &&
@@ -500,7 +518,7 @@ router.post('/chat', requireAuth, async (req, res) => {
     // Intercepts non-build intents before the build state machine starts.
     // ════════════════════════════════════════════════════════════
     if (isFirstMessage && !isEditMode) {
-      const intent = classifyTopLevelIntent(trimmedMessage);
+      const intent = classifyTopLevelIntent(trimmedMessage, modeHint);
 
       // ── Text-response intents ────────────────────────────────────────
       if (intent === 'conversion' || intent === 'reasoning' || intent === 'chat') {
@@ -806,6 +824,40 @@ router.post('/chat', requireAuth, async (req, res) => {
     // PHASE: mode — detect prototype or complete
     // ════════════════════════════════════════════════════════════
     if (req.session.chatPhase === 'mode') {
+      // ── Conversion escape — user corrected themselves ("no, I want a Word doc") ──
+      // If the response to the Prototype/Complete question is clearly a request to
+      // convert or create a document (not build an app), immediately pivot to conversion.
+      const isConvertEscape = CONVERSION_RE.test(trimmedMessage) ||
+        DOCUMENT_TYPE_RE.test(trimmedMessage) ||
+        CONVERT_ESCAPE_RE.test(trimmedMessage);
+
+      if (isConvertEscape) {
+        req.session.chatHistory = [];          // clear build history
+        req.session.chatPhase   = 'conversion';
+        req.session.conversionFormat = detectConversionFormat(trimmedMessage);
+        req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+
+        sendEvent('status', { message: 'Preparing your document…' });
+        let responseText = '';
+        await pooledStream({
+          contents:          [{ role: 'user', parts: [{ text: trimmedMessage }] }],
+          config:            { temperature: 0.5, maxOutputTokens: 8192 },
+          apiKey,
+          tier:              'chat',
+          systemInstruction: SYS_CONVERSION,
+          onChunk: (t) => sendEvent('chunk', { text: t }),
+          onDone:  (t) => { responseText = t; },
+        });
+
+        req.session.chatHistory.push({ role: 'assistant', content: responseText });
+        sendEvent('done', {
+          text: responseText,
+          downloadable: true,
+          detectedFormat: req.session.conversionFormat || 'docx',
+        });
+        return res.end();
+      }
+
       const detected = detectBuildMode(trimmedMessage);
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
 

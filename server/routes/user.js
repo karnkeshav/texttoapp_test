@@ -13,10 +13,15 @@ const { uidFromSession } = require('../middleware/packageGate');
 
 const router = express.Router();
 
+// AUTH DISABLED — auth check commented out; all requests pass as guest
+// function requireAnyAuth(req, res, next) {
+//   const uid = uidFromSession(req.session);
+//   if (!uid) return res.status(401).json({ error: 'Sign in required' });
+//   req.uid = uid;
+//   next();
+// }
 function requireAnyAuth(req, res, next) {
-  const uid = uidFromSession(req.session);
-  if (!uid) return res.status(401).json({ error: 'Sign in required' });
-  req.uid = uid;
+  req.uid = uidFromSession(req.session) || 'guest';
   next();
 }
 
