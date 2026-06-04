@@ -41,7 +41,8 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
   let backend = 'none';
   let type = 'static';
 
-  // ── STEP 1: Check package.json for definitive answers ────────────────
+  // 🔴 FIX #4: PROPER BACKEND DETECTION BY FILE TYPE
+  // Don't check package.json for Python/Go/Java/C# — check their actual config files!
   let hasNodeBackend = false;
   let hasPythonBackend = false;
   let hasJavaBackend = false;
@@ -51,13 +52,14 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
 
   try {
     if (token && owner && repo) {
+      // STEP 1A: Check package.json for FRONTEND frameworks + Node.js backend only
       const pkgJson = await getFileContent(token, owner, repo, 'package.json');
       if (pkgJson) {
         try {
           const pkg = JSON.parse(pkgJson);
           const deps = { ...pkg.dependencies, ...pkg.devDependencies };
 
-          // Check for frameworks (definitive, not guesses)
+          // Check for FRONTEND frameworks (these ARE in package.json)
           hasReact = deps.react !== undefined;
           hasVue = deps.vue !== undefined;
           hasAngular = deps['@angular/core'] !== undefined;
@@ -65,20 +67,8 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
           hasNext = deps.next !== undefined;
           hasNuxt = deps.nuxt !== undefined;
 
-          // Check for Node.js backend
+          // Check for Node.js backend ONLY (this IS in package.json)
           hasNodeBackend = deps.express !== undefined || deps.fastify !== undefined || deps.hapi !== undefined;
-
-          // Check for Python backend
-          hasPythonBackend = deps.flask !== undefined || deps.django !== undefined || deps.fastapi !== undefined;
-
-          // Check for Java backend
-          hasJavaBackend = deps.spring !== undefined || deps['spring-boot'] !== undefined;
-
-          // Check for Go backend
-          hasGoBackend = deps.gin !== undefined || deps.echo !== undefined || deps.fiber !== undefined;
-
-          // Check for C# backend
-          hasCsharpBackend = deps.aspnet !== undefined || deps.dotnet !== undefined;
 
           if (hasNext) frontend = 'nextjs';
           else if (hasNuxt) frontend = 'nuxtjs';
@@ -87,25 +77,71 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
           else if (hasAngular) frontend = 'angular';
           else if (hasSvelte) frontend = 'svelte';
 
-          // Determine backend (priority: Node > Python > Java > Go > C#)
           if (hasNodeBackend) backend = 'nodejs';
-          else if (hasPythonBackend) backend = 'python';
-          else if (hasJavaBackend) backend = 'java';
-          else if (hasGoBackend) backend = 'go';
-          else if (hasCsharpBackend) backend = 'csharp';
 
-          console.log(`[StackDetect] From package.json: ${frontend} + ${backend}`);
+          console.log(`[StackDetect] From package.json: frontend=${frontend}, backend=${backend}`);
         } catch (parseErr) {
           console.warn('[StackDetect] Could not parse package.json:', parseErr.message);
         }
       }
+
+      // STEP 1B: Check for Python backend (requirements.txt, pyproject.toml, Pipfile)
+      if (backend === 'none') {
+        const requirements = await getFileContent(token, owner, repo, 'requirements.txt');
+        const pyproject = await getFileContent(token, owner, repo, 'pyproject.toml');
+        const pipfile = await getFileContent(token, owner, repo, 'Pipfile');
+
+        if (requirements || pyproject || pipfile) {
+          hasPythonBackend = true;
+          backend = 'python';
+          console.log('[StackDetect] Python backend detected: found requirements.txt/pyproject.toml/Pipfile');
+        }
+      }
+
+      // STEP 1C: Check for Go backend (go.mod, go.sum)
+      if (backend === 'none') {
+        const gomod = await getFileContent(token, owner, repo, 'go.mod');
+        const gosum = await getFileContent(token, owner, repo, 'go.sum');
+
+        if (gomod || gosum) {
+          hasGoBackend = true;
+          backend = 'go';
+          console.log('[StackDetect] Go backend detected: found go.mod/go.sum');
+        }
+      }
+
+      // STEP 1D: Check for Java backend (pom.xml, build.gradle, gradle.build)
+      if (backend === 'none') {
+        const pomxml = await getFileContent(token, owner, repo, 'pom.xml');
+        const buildgradle = await getFileContent(token, owner, repo, 'build.gradle');
+
+        if (pomxml || buildgradle) {
+          hasJavaBackend = true;
+          backend = 'java';
+          console.log('[StackDetect] Java backend detected: found pom.xml/build.gradle');
+        }
+      }
+
+      // STEP 1E: Check for C# backend (.csproj, .sln)
+      if (backend === 'none') {
+        // List files in root to check for .csproj or .sln
+        // For now, check if any HTML mentions common C# patterns
+        // This is a limitation of the single-file check approach
+        if (code.includes('csproj') || code.includes('dotnet') || code.includes('aspnet')) {
+          hasCsharpBackend = true;
+          backend = 'csharp';
+          console.log('[StackDetect] C# backend suspected: found .net/aspnet references');
+        }
+      }
+
     }
   } catch (e) {
-    // Silent fail on package.json fetch
-    console.log('[StackDetect] Could not fetch package.json, using HTML analysis');
+    console.log('[StackDetect] Error during backend detection:', e.message);
   }
 
-  // ── STEP 2: Fallback to HTML analysis if package.json not available ──
+  // ── STEP 2: Fallback to HTML analysis for FRONTEND frameworks only ──
+  // ⚠️ NOTE: HTML hints can't reliably detect non-Node.js backends
+  // Those require proper file detection (requirements.txt, go.mod, pom.xml, etc.)
   if (frontend === 'html') {
     // Only if we didn't find framework in package.json
     if (code.includes('react') && code.includes('reactdom')) frontend = 'react';
@@ -116,19 +152,17 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
     else if (code.includes('nuxt')) frontend = 'nuxtjs';
   }
 
-  // ── STEP 3: Detect backend from HTML hints if not in package.json ────
+  // ── STEP 3: Only HTML hints for Node.js (can appear in HTML) ────
+  // 🔴 FIX #4: Removed HTML hints for Python/Go/Java/C#
+  // Those MUST be detected by their proper config files (Step 1B-E)
+  // Checking HTML for "gin" or "spring" is unreliable
   if (backend === 'none') {
     if (code.includes('express') || code.includes('server.js') || code.includes('app.js')) {
       backend = 'nodejs';
-    } else if (code.includes('flask') || code.includes('django') || code.includes('fastapi')) {
-      backend = 'python';
-    } else if (code.includes('spring') || code.includes('springboot')) {
-      backend = 'java';
-    } else if (code.includes('gin') || code.includes('echo') || code.includes('fiber')) {
-      backend = 'go';
-    } else if (code.includes('aspnet') || code.includes('.net') || code.includes('dotnet')) {
-      backend = 'csharp';
     }
+    // ⚠️ REMOVED: Flask, Django, Gin, Echo, Spring, AspNet checks
+    // These are NOT reliable from HTML content
+    // They MUST be detected from their actual config files
   }
 
   // ── STEP 4: Detect type ────────────────────────────────────────────────
