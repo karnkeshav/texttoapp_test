@@ -177,7 +177,7 @@ async function getFileContent(accessToken, owner, repo, path = 'index.html') {
 // Set this in Render env vars: GITHUB_TOKEN = <your PAT>
 
 const OWNER       = 'karnkeshav';
-const SOURCE_REPO = 'texttoapp';
+const SOURCE_REPO = 'texttoapp_test';
 
 /**
  * Read a source file from the texttoapp repo using the owner's PAT.
