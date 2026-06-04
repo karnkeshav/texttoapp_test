@@ -747,8 +747,8 @@ function checkForCode(text, hintRepoName) {
 
   // ── Multi-file format: each block starts with a FILE: path comment ──
   // Matches ```html, ```css, ```javascript, ```js code blocks
-  const BLOCK_RE = /```(html|css|javascript|js)\s*([\s\S]*?)```/gi;
-  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*)([^\s*>]+)/i;
+  const BLOCK_RE = /```(html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml|env)\s*([\s\S]*?)```/gi;
+  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
 
   let blockMatch;
   while ((blockMatch = BLOCK_RE.exec(text)) !== null) {
@@ -1097,24 +1097,54 @@ async function deployToGitHub(fileId, btn) {
 
     if (data.success) {
       clearPendingBuild(); // successfully deployed — no need to resume this build later
-      card.innerHTML = `
-        <div class="push-success">
-          <h4>🎉 Deployed to GitHub Pages!</h4>
-          <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-            Your code is pushed and GitHub Pages is building the site.
-            The live URL below is usually ready within <strong>2–5 minutes</strong> for a first deployment —
-            if it shows a 404, wait a moment and refresh.
-          </p>
-          <p style="margin-bottom:8px;">
-            🔗 <strong>Live URL:</strong>
-            <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
-          </p>
-          <p style="margin-bottom:0;">
-            📁 <strong>Repository:</strong>
-            <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
-          </p>
-        </div>
-      `;
+
+      const isNodeApp = !!data.localUrl;
+
+      if (isNodeApp) {
+        // ── Node.js / full-stack app ──────────────────────────────
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>🚀 App launched locally!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your Node.js app has been saved, dependencies installed, and the server
+              started in a new terminal window.
+            </p>
+            <p style="margin-bottom:8px;">
+              🖥️ <strong>Local URL:</strong>
+              <a href="${data.localUrl}" target="_blank" rel="noopener"
+                style="color:#4ade80;font-weight:700;">${data.localUrl}</a>
+              &nbsp;<span style="font-size:12px;color:var(--text-3);">(open in your browser)</span>
+            </p>
+            <p style="margin-bottom:8px;">
+              📁 <strong>Source code:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+            <p style="font-size:12px;color:var(--text-3);margin-bottom:0;">
+              💡 The app is also saved at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
+            </p>
+          </div>
+        `;
+      } else {
+        // ── Static / GitHub Pages app ─────────────────────────────
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>🎉 Deployed to GitHub Pages!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your code is pushed and GitHub Pages is building the site.
+              The live URL below is usually ready within <strong>2–5 minutes</strong> for a first deployment —
+              if it shows a 404, wait a moment and refresh.
+            </p>
+            <p style="margin-bottom:8px;">
+              🔗 <strong>Live URL:</strong>
+              <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
+            </p>
+            <p style="margin-bottom:0;">
+              📁 <strong>Repository:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+          </div>
+        `;
+      }
     } else {
       btn.disabled = false;
       btn.textContent = 'Retry deployment';
