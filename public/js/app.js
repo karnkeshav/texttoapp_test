@@ -1340,31 +1340,37 @@ function showDailyLimitBanner(errData) {
 let quotaPanelOpen   = false;
 let quotaAutoRefresh = null;
 
+const PROVIDER_META = {
+  gemini:    { label: 'Gemini',    color: '#3b82f6', bg: 'rgba(59,130,246,0.1)',  border: 'rgba(59,130,246,0.25)'  },
+  groq:      { label: 'Groq',      color: '#f97316', bg: 'rgba(249,115,22,0.1)',  border: 'rgba(249,115,22,0.25)'  },
+  cerebras:  { label: 'Cerebras',  color: '#a855f7', bg: 'rgba(168,85,247,0.1)',  border: 'rgba(168,85,247,0.25)'  },
+  sambanova: { label: 'SambaNova', color: '#22c55e', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.25)'   },
+};
+
 function toggleQuotaPanel() {
   quotaPanelOpen = !quotaPanelOpen;
   const panel   = document.getElementById('quotaPanel');
   const overlay = document.getElementById('quotaOverlay');
   const btn     = document.getElementById('quotaBtn');
-
   if (quotaPanelOpen) {
     panel.style.display   = 'block';
     overlay.style.display = 'block';
-    if (btn) { btn.style.borderColor = 'var(--purple-light)'; btn.style.color = 'var(--purple-light)'; }
+    if (btn) { btn.style.borderColor='rgba(99,102,241,0.5)'; btn.style.background='rgba(99,102,241,0.14)'; }
     fetchQuotaData();
     quotaAutoRefresh = setInterval(fetchQuotaData, 30000);
   } else {
     panel.style.display   = 'none';
     overlay.style.display = 'none';
-    if (btn) { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--text-3)'; }
+    if (btn) { btn.style.borderColor='rgba(99,102,241,0.25)'; btn.style.background='rgba(99,102,241,0.08)'; }
     if (quotaAutoRefresh) { clearInterval(quotaAutoRefresh); quotaAutoRefresh = null; }
   }
 }
 
 function refreshQuota() {
   const btn = document.getElementById('quotaRefreshBtn');
-  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  if (btn) { btn.textContent = '↻'; btn.style.animation = 'qspin 0.75s linear infinite'; btn.disabled = true; }
   fetchQuotaData().finally(() => {
-    if (btn) { btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+    if (btn) { btn.style.animation = ''; btn.textContent = '↻'; btn.disabled = false; }
   });
 }
 
@@ -1373,99 +1379,169 @@ async function fetchQuotaData() {
     const res  = await fetch('/api/quota/status');
     const data = await res.json();
     renderQuotaPanel(data);
-  } catch (err) {
+  } catch {
     const el = document.getElementById('quotaContent');
-    if (el) el.innerHTML = '<div style="color:#f87171;font-size:13px;padding:20px;">Failed to load quota data.</div>';
+    if (el) el.innerHTML = `<div style="color:#f87171;font-size:12px;padding:32px 0;text-align:center;">
+      Failed to load quota data.<br/><span style="color:var(--text-3)">Is the server running?</span></div>`;
   }
 }
 
 function renderQuotaPanel(data) {
+  // ── Reset info ──────────────────────────────────────────────────
   const resetEl = document.getElementById('quotaResetInfo');
-  if (resetEl && data.resetInfo) {
-    resetEl.textContent = '🔄 ' + data.resetInfo.resetLabel;
+  if (resetEl && data.resetInfo) resetEl.textContent = data.resetInfo.resetLabel;
+
+  // ── Health pills (header row) ──────────────────────────────────
+  const pillsEl = document.getElementById('quotaHealthPills');
+  if (pillsEl) {
+    pillsEl.innerHTML = Object.entries(PROVIDER_META).map(([key, m]) => {
+      const configured = data.configured?.[key];
+      const models     = data.providers?.[key] || [];
+      const anyDead    = models.some(x => x.slotStatus === 'dead');
+      const anyCrit    = models.some(x => x.status === 'critical');
+      const anyWarn    = models.some(x => x.status === 'warning');
+      const dot = !configured ? '#64748b' : anyDead ? '#f87171' : anyCrit ? '#f87171' : anyWarn ? '#fbbf24' : '#4ade80';
+      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;
+        font-size:10px;font-weight:600;color:${m.color};background:${m.bg};border:1px solid ${m.border};">
+        <div style="width:5px;height:5px;border-radius:50%;background:${dot};flex-shrink:0;"></div>
+        ${m.label}
+      </div>`;
+    }).join('');
   }
 
+  // ── Main content ───────────────────────────────────────────────
   const content = document.getElementById('quotaContent');
   if (!content) return;
 
-  const providerOrder  = ['gemini', 'groq', 'cerebras', 'sambanova'];
-  const providerLabels = {
-    gemini:    '🔵 Gemini Pool',
-    groq:      '🟠 Groq Pool',
-    cerebras:  '🟣 Cerebras Pool',
-    sambanova: '🟢 SambaNova Pool',
-  };
-
+  const providers = ['gemini', 'groq', 'cerebras', 'sambanova'];
   let html = '';
 
-  for (const provider of providerOrder) {
-    if (data.configured && !data.configured[provider]) {
-      html += `<div style="margin-bottom:16px;opacity:0.5;">
-        <div style="font-size:12px;font-weight:700;color:var(--text-3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">${providerLabels[provider]}</div>
-        <div style="font-size:11px;color:var(--text-3);padding:8px 0;">Not configured — add API key to .env</div>
+  // Summary cards row (2×2 grid)
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">`;
+  for (const key of providers) {
+    const m          = PROVIDER_META[key];
+    const configured = data.configured?.[key];
+    const models     = data.providers?.[key] || [];
+    const totalReq   = models.reduce((s, x) => s + (x.requestsUsed || 0), 0);
+    const totalTok   = models.reduce((s, x) => s + (x.tokensUsed   || 0), 0);
+    const maxPct     = models.reduce((max, x) => Math.max(max, x.percentUsed || 0), 0);
+    const barColor   = maxPct > 90 ? '#f87171' : maxPct > 70 ? '#fbbf24' : m.color;
+    const activeCount = models.filter(x => x.slotStatus === 'active').length;
+    const totalSlots  = models.length;
+
+    if (!configured) {
+      html += `<div style="border-radius:11px;border:1px solid var(--border);padding:12px;
+        background:rgba(255,255,255,0.01);opacity:0.45;">
+        <div style="font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:0.3px;margin-bottom:6px;">${m.label.toUpperCase()}</div>
+        <div style="font-size:11px;color:var(--text-3);">Not configured</div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:2px;">Add API key to .env</div>
       </div>`;
       continue;
     }
 
-    const models = data.providers[provider] || [];
+    html += `<div style="border-radius:11px;border:1px solid ${m.border};padding:12px;background:${m.bg};cursor:pointer;"
+      onclick="toggleQSection('qs-${key}')">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:10px;font-weight:700;color:${m.color};letter-spacing:0.4px;">${m.label.toUpperCase()}</div>
+        <div style="font-size:9px;color:var(--text-3);">${activeCount}/${totalSlots} slots</div>
+      </div>
+      <div style="font-size:18px;font-weight:800;color:var(--text);letter-spacing:-0.5px;line-height:1;">
+        ${totalReq > 0 ? totalReq.toLocaleString() : totalTok > 0 ? Math.round(totalTok/1000)+'K' : '0'}
+      </div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:1px;margin-bottom:8px;">
+        ${totalTok > 0 && totalReq === 0 ? 'tokens used today' : 'requests today'}
+      </div>
+      ${maxPct > 0 ? `<div class="qs-bar-bg"><div class="qs-bar-fill" style="width:${Math.min(maxPct,100)}%;background:${barColor};"></div></div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:3px;">${maxPct}% peak usage</div>` :
+      `<div class="qs-bar-bg"><div class="qs-bar-fill" style="width:0%;background:${m.color};"></div></div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:3px;">0% used</div>`}
+    </div>`;
+  }
+  html += `</div>`;
 
-    html += `<div style="margin-bottom:20px;">
-      <div style="font-size:12px;font-weight:700;color:var(--text-2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;padding-bottom:6px;border-bottom:1px solid var(--border);">${providerLabels[provider]}</div>`;
+  // Separator
+  html += `<div style="font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:0.8px;
+    text-transform:uppercase;margin-bottom:8px;padding-left:2px;">Model Breakdown</div>`;
 
-    for (const m of models) {
-      let statusIcon  = '✅';
-      if (m.slotStatus === 'dead')         statusIcon = '❌';
-      else if (m.slotStatus === 'cooling') statusIcon = '⏸️';
-      else if (m.status === 'critical')    statusIcon = '🔴';
-      else if (m.status === 'warning')     statusIcon = '🟡';
+  // Accordion sections per provider
+  for (const key of providers) {
+    const m          = PROVIDER_META[key];
+    const configured = data.configured?.[key];
+    const models     = data.providers?.[key] || [];
+    if (!configured) continue;
 
-      let usageText = '';
-      let progressPct = 0;
-      let progressColor = '#4ade80';
+    const anyIssue = models.some(x => x.slotStatus !== 'active' || x.status === 'critical' || x.status === 'warning');
+    const chevron  = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
 
-      if (m.tokensLimit) {
-        const tokK = Math.round(m.tokensUsed / 1000);
-        const limK = Math.round(m.tokensLimit / 1000);
-        usageText   = `${tokK}K / ${limK}K tokens`;
-        progressPct = m.percentUsed || 0;
-      } else if (m.requestsLimit) {
-        usageText   = `${m.requestsUsed.toLocaleString()} / ${m.requestsLimit.toLocaleString()} req`;
-        progressPct = m.percentUsed || 0;
-      } else {
-        usageText = `${m.requestsUsed} req (unlimited)`;
-      }
-
-      if (progressPct > 90)      progressColor = '#f87171';
-      else if (progressPct > 70) progressColor = '#fbbf24';
-
-      let coolingBadge = '';
-      if (m.slotStatus === 'cooling' && m.coolingSecondsLeft > 0) {
-        coolingBadge = `<span style="font-size:10px;color:#fbbf24;margin-left:6px;">cooling ${m.coolingSecondsLeft}s</span>`;
-      }
-
-      const shortName = m.model.length > 28 ? m.model.slice(0, 26) + '…' : m.model;
-
-      const progressBar = (m.requestsLimit || m.tokensLimit)
-        ? `<div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:4px;">
-             <div style="height:100%;width:${Math.min(progressPct, 100)}%;background:${progressColor};border-radius:2px;transition:width 0.5s ease;"></div>
-           </div>`
-        : '';
-
-      html += `<div style="margin-bottom:10px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <div style="font-size:11px;color:var(--text-2);display:flex;align-items:center;gap:5px;">
-            <span>${statusIcon}</span>
-            <span title="${m.model}">${shortName}</span>
-            ${coolingBadge}
-          </div>
-          <div style="font-size:11px;color:var(--text-3);">${usageText}</div>
+    html += `<div class="qs-section" id="qs-${key}">
+      <div class="qs-header" onclick="toggleQSection('qs-${key}')">
+        <div style="display:flex;align-items:center;gap:7px;">
+          <div style="width:7px;height:7px;border-radius:50%;background:${m.color};flex-shrink:0;"></div>
+          <span style="font-size:12px;font-weight:600;color:var(--text);">${m.label}</span>
+          ${anyIssue ? `<span style="font-size:9px;color:#fbbf24;font-weight:600;">⚠ check models</span>` : ''}
         </div>
-        ${progressBar}
+        <div style="display:flex;align-items:center;gap:6px;color:var(--text-3);">
+          <span style="font-size:10px;">${models.length} models</span>
+          <div id="qs-${key}-chev" style="transition:transform 0.2s;color:var(--text-3);">${chevron}</div>
+        </div>
+      </div>
+      <div class="qs-body" id="qs-${key}-body" style="display:none;">`;
+
+    for (const mdl of models) {
+      const pct    = mdl.percentUsed || 0;
+      const bar    = pct > 90 ? '#f87171' : pct > 70 ? '#fbbf24' : m.color;
+      const icon   = mdl.slotStatus === 'dead'    ? `<span style="color:#f87171;font-size:10px;">✕</span>` :
+                     mdl.slotStatus === 'cooling'  ? `<span style="color:#fbbf24;font-size:10px;">⏸</span>` :
+                     mdl.status     === 'critical' ? `<span style="color:#f87171;font-size:10px;">●</span>` :
+                     mdl.status     === 'warning'  ? `<span style="color:#fbbf24;font-size:10px;">●</span>` :
+                                                     `<span style="color:#4ade80;font-size:10px;">●</span>`;
+
+      const usageStr = mdl.tokensLimit
+        ? `${Math.round(mdl.tokensUsed/1000)}K / ${Math.round(mdl.tokensLimit/1000)}K tok`
+        : mdl.requestsLimit
+        ? `${mdl.requestsUsed} / ${mdl.requestsLimit} req`
+        : `${mdl.requestsUsed} req`;
+
+      const short = mdl.model.length > 24 ? mdl.model.slice(0, 22) + '…' : mdl.model;
+      const cooling = mdl.slotStatus === 'cooling' && mdl.coolingSecondsLeft > 0
+        ? `<span style="font-size:9px;color:#fbbf24;"> ${mdl.coolingSecondsLeft}s</span>` : '';
+
+      html += `<div class="qs-row">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+          ${icon}
+          <div style="min-width:0;">
+            <div style="font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
+              title="${mdl.model}">${short}${cooling}</div>
+            ${(mdl.requestsLimit || mdl.tokensLimit) ? `<div class="qs-bar-bg" style="margin-top:2px;"><div class="qs-bar-fill" style="width:${Math.min(pct,100)}%;background:${bar};"></div></div>` : ''}
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:10px;flex-shrink:0;">${usageStr}</div>
       </div>`;
     }
 
-    html += '</div>';
+    html += `</div></div>`; // close qs-body + qs-section
   }
 
-  content.innerHTML = html || '<div style="color:var(--text-3);font-size:13px;">No data available.</div>';
+  content.innerHTML = html;
+
+  // Auto-open first provider section
+  const firstKey = providers.find(k => data.configured?.[k]);
+  if (firstKey) openQSection('qs-' + firstKey);
+}
+
+function toggleQSection(id) {
+  const body = document.getElementById(id + '-body');
+  const chev = document.getElementById(id + '-chev');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (chev) chev.style.transform = isOpen ? '' : 'rotate(180deg)';
+}
+
+function openQSection(id) {
+  const body = document.getElementById(id + '-body');
+  const chev = document.getElementById(id + '-chev');
+  if (!body) return;
+  body.style.display = 'block';
+  if (chev) chev.style.transform = 'rotate(180deg)';
 }
