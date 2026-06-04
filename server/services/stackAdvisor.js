@@ -205,7 +205,16 @@ function buildStackContext(stack, answers) {
   ];
 
   // Framework-specific instructions
-  if (stack.frontend === 'react') {
+  if (stack.frontend === 'html') {
+    lines.push(
+      `• Generate vanilla HTML + JavaScript (no frameworks)`,
+      `• Structure: Separate index.html, css/style.css, and js/app.js files`,
+      `• Use plain JavaScript: DOM APIs, event listeners, fetch() for AJAX`,
+      `• No external dependencies except Google Fonts for typography`,
+      `• All styles in CSS file (no inline <style> blocks)`,
+      `• All scripts in JS file (no inline <script> blocks — only <script src="js/app.js"></script> in HTML)`,
+    );
+  } else if (stack.frontend === 'react') {
     lines.push(
       `• Generate React 18 with JSX syntax (via CDN, no build step)`,
       `• REQUIRED: Load React, ReactDOM, and Babel from CDN for JSX transpilation`,
