@@ -31,6 +31,38 @@ const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } =
 
 const router = express.Router();
 
+// ── Detect stack from existing HTML code ──────────────────────────────
+// Analyzes the HTML to guess which frontend framework was used
+function detectStackFromCode(htmlCode) {
+  if (!htmlCode) return { frontend: 'html', backend: 'none', type: 'static' };
+
+  const code = htmlCode.toLowerCase();
+  let frontend = 'html';
+  let backend = 'none';
+  let type = 'static';
+
+  // Detect frontend
+  if (code.includes('react') && code.includes('reactdom')) frontend = 'react';
+  else if (code.includes('vue') && code.includes('vue.global')) frontend = 'vue';
+  else if (code.includes('angular/core')) frontend = 'angular';
+  else if (code.includes('svelte')) frontend = 'svelte';
+  else if (code.includes('next')) frontend = 'nextjs';
+  else if (code.includes('nuxt')) frontend = 'nuxtjs';
+
+  // Detect backend hints from HTML structure
+  if (code.includes('express') || code.includes('server.js') || code.includes('/api/')) {
+    backend = 'nodejs';
+    type = 'spa';
+  }
+
+  // Detect type
+  if (code.includes('manifest.json') || code.includes('service-worker')) type = 'pwa';
+  else if (code.includes('babel-standalone') || (frontend === 'react' && !code.includes('manifest'))) type = 'spa';
+  else if (code.includes('server-side')) type = 'ssr';
+
+  return { frontend, backend, type };
+}
+
 // ── Extract generated files from AI response text (mirrors app.js logic) ──
 function extractFilesFromText(text) {
   const files = [];
@@ -408,7 +440,12 @@ router.post('/chat', requireAuth, async (req, res) => {
   const hasAttachment = attachment && attachment.mimeType && attachment.data;
   const isImageAttachment = hasAttachment && attachment.mimeType.startsWith('image/');
 
-  // Reset full session on new conversation
+  // Reset full session on new conversation (but preserve edit mode if continuing)
+  const isRestoringEditMode = isEditMode && req.session.editMode &&
+    req.session.editMode.owner === editOwner &&
+    req.session.editMode.repo === editRepo &&
+    req.session.chatPhase === 'editing'; // Only if already in editing phase
+
   if (newConversation || !req.session.chatHistory) {
     req.session.chatHistory      = [];
     req.session.planNotes        = '';
@@ -423,6 +460,14 @@ router.post('/chat', requireAuth, async (req, res) => {
     req.session.pptPurpose       = '';     // PPT ask-back: chosen purpose key (1-6)
     req.session.selectedStack    = null;   // stack selection (Complete Product flow)
     req.session.stackQuestions   = null;   // stack-aware Q1-Q5
+    req.session.detectedStack    = null;   // detected stack from existing repo
+    req.session.currentCode      = null;   // existing repo code
+  }
+
+  // If restoring edit mode session, skip the choice screen and go straight to conversational
+  if (isRestoringEditMode) {
+    // Session is preserved, phase is already 'editing', ready to continue
+    console.log(`[EditMode] Resuming editing session for ${editOwner}/${editRepo}`);
   }
 
   const history = req.session.chatHistory;
@@ -749,6 +794,11 @@ router.post('/chat', requireAuth, async (req, res) => {
           sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
           return res.end();
         }
+
+        // ── Detect stack from existing code ───────────────────────────────
+        const detectedStack = detectStackFromCode(req.session.currentCode);
+        req.session.detectedStack = detectedStack;
+        console.log(`[EditMode] Detected stack from ${editOwner}/${editRepo}:`, detectedStack);
 
         // ── Show edit choice screen ────────────────────────────────────
         const choiceMsg = `I found your app in **${editOwner}/${editRepo}**. What would you like to do?\n\n` +
@@ -1346,6 +1396,11 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
       donePayload.editMode  = true;
       donePayload.editOwner = req.session.editMode.owner;
       donePayload.editRepo  = req.session.editMode.repo;
+      // Include deployment mode for edit mode using detected stack
+      if (req.session.detectedStack) {
+        donePayload.deployMode = getDeploymentMode(req.session.detectedStack);
+        console.log(`[EditMode] Deployment mode for ${req.session.editMode.repo}: ${donePayload.deployMode}`);
+      }
     } else {
       // Flag the frontend explicitly when this is a build response.
       // This lets the client show the deploy button even if its own
@@ -1363,8 +1418,10 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
           console.log(`[DryRun] Final result: ${dryResult.summary}`);
         }
         // Include deployment mode so frontend shows correct CTA
-        if (req.session.selectedStack) {
-          donePayload.deployMode = getDeploymentMode(req.session.selectedStack);
+        // Use selected stack if available, otherwise fall back to detected stack
+        const stackForDeployment = req.session.selectedStack || req.session.detectedStack;
+        if (stackForDeployment) {
+          donePayload.deployMode = getDeploymentMode(stackForDeployment);
         }
       }
     }
