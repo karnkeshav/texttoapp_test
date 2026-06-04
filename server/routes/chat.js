@@ -43,6 +43,10 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
 
   // ── STEP 1: Check package.json for definitive answers ────────────────
   let hasNodeBackend = false;
+  let hasPythonBackend = false;
+  let hasJavaBackend = false;
+  let hasGoBackend = false;
+  let hasCsharpBackend = false;
   let hasReact = false, hasVue = false, hasAngular = false, hasNuxt = false, hasNext = false, hasSvelte = false;
 
   try {
@@ -64,6 +68,18 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
           // Check for Node.js backend
           hasNodeBackend = deps.express !== undefined || deps.fastify !== undefined || deps.hapi !== undefined;
 
+          // Check for Python backend
+          hasPythonBackend = deps.flask !== undefined || deps.django !== undefined || deps.fastapi !== undefined;
+
+          // Check for Java backend
+          hasJavaBackend = deps.spring !== undefined || deps['spring-boot'] !== undefined;
+
+          // Check for Go backend
+          hasGoBackend = deps.gin !== undefined || deps.echo !== undefined || deps.fiber !== undefined;
+
+          // Check for C# backend
+          hasCsharpBackend = deps.aspnet !== undefined || deps.dotnet !== undefined;
+
           if (hasNext) frontend = 'nextjs';
           else if (hasNuxt) frontend = 'nuxtjs';
           else if (hasReact) frontend = 'react';
@@ -71,7 +87,12 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
           else if (hasAngular) frontend = 'angular';
           else if (hasSvelte) frontend = 'svelte';
 
+          // Determine backend (priority: Node > Python > Java > Go > C#)
           if (hasNodeBackend) backend = 'nodejs';
+          else if (hasPythonBackend) backend = 'python';
+          else if (hasJavaBackend) backend = 'java';
+          else if (hasGoBackend) backend = 'go';
+          else if (hasCsharpBackend) backend = 'csharp';
 
           console.log(`[StackDetect] From package.json: ${frontend} + ${backend}`);
         } catch (parseErr) {
@@ -97,8 +118,16 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
 
   // ── STEP 3: Detect backend from HTML hints if not in package.json ────
   if (backend === 'none') {
-    if (code.includes('express') || code.includes('server.js') || code.includes('/api/')) {
+    if (code.includes('express') || code.includes('server.js') || code.includes('app.js')) {
       backend = 'nodejs';
+    } else if (code.includes('flask') || code.includes('django') || code.includes('fastapi')) {
+      backend = 'python';
+    } else if (code.includes('spring') || code.includes('springboot')) {
+      backend = 'java';
+    } else if (code.includes('gin') || code.includes('echo') || code.includes('fiber')) {
+      backend = 'go';
+    } else if (code.includes('aspnet') || code.includes('.net') || code.includes('dotnet')) {
+      backend = 'csharp';
     }
   }
 
@@ -107,9 +136,14 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
     type = 'pwa';
   } else if (frontend === 'nextjs' || frontend === 'nuxtjs') {
     type = 'ssr';
-  } else if (backend === 'nodejs' || (frontend !== 'html' && frontend !== 'nextjs')) {
+  } else if (backend && backend !== 'none') {
+    // Has any backend (Node.js, Python, Java, Go, C#) → dynamic/SPA
+    type = 'spa';
+  } else if (frontend !== 'html') {
+    // Frontend without backend (React/Vue/Angular/Svelte CDN) → SPA
     type = 'spa';
   } else {
+    // Plain HTML, no backend → static
     type = 'static';
   }
 
@@ -1246,9 +1280,17 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     // Build enrichedNotes based on mode
     let enrichedNotes = '';
 
+    // ✅ FIX: Build stack context if selected (should be included in ALL modes)
+    let stackContext = '';
+    if (req.session.selectedStack) {
+      stackContext = buildStackContext(req.session.selectedStack, req.session.gatheredAnswers || []) + '\n\n';
+      console.log('[Chat] Including stack context for:', JSON.stringify(req.session.selectedStack));
+    }
+
     if (req.session.buildMode === 'complete' && req.session.compiledSpec) {
       enrichedNotes =
         `COMPLETE PRODUCT BUILD — specification from 5-question requirements interview:\n` +
+        `${stackContext}` +  // ✅ FIX: Include stack context
         `${req.session.compiledSpec}\n\n` +
         `Original user request: "${req.session.originalRequest}"`;
 
@@ -1259,6 +1301,7 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
 
       // trimmedMessage at this point IS the style answer (prototype_style turn)
       enrichedNotes =
+        `${stackContext}` +  // ✅ FIX: Include stack context
         `${base}\n` +
         `User's chosen style: "${trimmedMessage}". Apply this throughout.\n\n` +
         `PROTOTYPE MODE: Build a SINGLE-PAGE application. ` +
@@ -1266,9 +1309,20 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
         `to clearly labeled in-page sections. All sections must have complete, realistic, ` +
         `domain-specific content. NO multi-page routing or separate HTML files.`;
 
-    } else if (req.session.planNotes) {
-      // Subsequent turns in 'building' phase (app refinement)
-      enrichedNotes = req.session.planNotes;
+    } else if (req.session.planNotes || stackContext) {
+      // ✅ FIX: Include stack context for subsequent building turns
+      enrichedNotes = stackContext + (req.session.planNotes || '');
+    }
+
+    // 🔴 BUG FIX #1: Ensure enrichedNotes is NEVER empty
+    if (!enrichedNotes || enrichedNotes.trim() === '') {
+      enrichedNotes = 'Build request (no context available)';
+      if (req.session.selectedStack) {
+        enrichedNotes = `Build ${req.session.selectedStack.frontend} + ${req.session.selectedStack.backend} application`;
+      } else if (req.session.detectedStack) {
+        enrichedNotes = `Build ${req.session.detectedStack.frontend} + ${req.session.detectedStack.backend} application`;
+      }
+      console.warn('[Chat] WARNING: enrichedNotes was empty, using fallback:', enrichedNotes);
     }
 
     // For complete mode, send original request to AI (spec is in enrichedNotes)
@@ -1508,9 +1562,22 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
         }
         // Include deployment mode so frontend shows correct CTA
         // Use selected stack if available, otherwise fall back to detected stack
-        const stackForDeployment = req.session.selectedStack || req.session.detectedStack;
+        // 🔴 BUG FIX #3: Verify stack has all required fields
+        let stackForDeployment = req.session.selectedStack || req.session.detectedStack;
         if (stackForDeployment) {
+          // Ensure all required fields are present
+          if (!stackForDeployment.frontend || !stackForDeployment.backend || !stackForDeployment.type) {
+            console.warn('[DeployMode] Stack missing fields, rebuilding:', stackForDeployment);
+            // Attempt to rebuild with detected info
+            const detected = req.session.detectedStack || {};
+            stackForDeployment = {
+              frontend: stackForDeployment.frontend || detected.frontend || 'html',
+              backend: stackForDeployment.backend || detected.backend || 'none',
+              type: stackForDeployment.type || detected.type || 'static'
+            };
+          }
           donePayload.deployMode = getDeploymentMode(stackForDeployment);
+          console.log('[DeployMode] Final stack for deployment:', stackForDeployment, '→', donePayload.deployMode);
         }
       }
     }

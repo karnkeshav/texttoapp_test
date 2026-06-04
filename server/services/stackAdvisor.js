@@ -189,6 +189,12 @@ Last one — help me get the visuals right:
  * so the AI generates the right technology.
  */
 function buildStackContext(stack, answers) {
+  // 🔴 BUG FIX #2: Validate all required stack fields exist
+  if (!stack || !stack.frontend || !stack.backend || !stack.type) {
+    console.warn('[buildStackContext] Invalid stack:', stack);
+    return '';
+  }
+
   const label       = getStackLabel(stack);
   const deployMode  = getDeploymentMode(stack);
   const hasBackend  = stack.backend && stack.backend !== 'none';
