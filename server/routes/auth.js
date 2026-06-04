@@ -73,75 +73,60 @@ function isAuthenticated(req) {
 //   }
 // });
 
-// AUTH DISABLED — GitHub OAuth commented out for future re-enable
 // ══════════════════════════════════════════════════════════════════
-// GITHUB OAUTH  (secondary — needed for Deploy to GitHub Pages)
+// GITHUB OAUTH  (needed for Deploy to GitHub Pages)
 // ══════════════════════════════════════════════════════════════════
 
-// router.get('/github', (req, res) => {
-//   const params = new URLSearchParams({
-//     client_id:    process.env.GITHUB_CLIENT_ID,
-//     redirect_uri: process.env.GITHUB_CALLBACK_URL,
-//     scope:        'repo user',
-//     state:        Math.random().toString(36).slice(2),
-//   });
-//   res.redirect(`https://github.com/login/oauth/authorize?${params}`);
-// });
+router.get('/github', (req, res) => {
+  const params = new URLSearchParams({
+    client_id:    process.env.GITHUB_CLIENT_ID,
+    redirect_uri: process.env.GITHUB_CALLBACK_URL,
+    scope:        'repo user',
+    state:        Math.random().toString(36).slice(2),
+  });
+  res.redirect(`https://github.com/login/oauth/authorize?${params}`);
+});
 
-// router.get('/github/callback', async (req, res) => {
-//   const { code } = req.query;
-//   if (!code) return res.redirect('/?error=no_code');
-//
-//   try {
-//     const tokenRes = await axios.post(
-//       'https://github.com/login/oauth/access_token',
-//       {
-//         client_id:     process.env.GITHUB_CLIENT_ID,
-//         client_secret: process.env.GITHUB_CLIENT_SECRET,
-//         code,
-//         redirect_uri:  process.env.GITHUB_CALLBACK_URL,
-//       },
-//       { headers: { Accept: 'application/json' } }
-//     );
-//
-//     const { access_token, error } = tokenRes.data;
-//     if (error || !access_token) return res.redirect('/?error=oauth_failed');
-//
-//     req.session.githubToken = access_token;
-//     const githubUser = await getUser(access_token);
-//     req.session.githubUser = githubUser;
-//
-//     if (req.session.googleUser) {
-//       // Already signed in with Google — this is "Connect GitHub"
-//       req.session.user = { ...req.session.user, githubLogin: githubUser.login };
-//       if (req.session.googleUser.uid) {
-//         linkGitHub(req.session.googleUser.uid, githubUser.login).catch(() => {});
-//       }
-//     } else {
-//       // GitHub-only login
-//       req.session.user = {
-//         login:    githubUser.login,
-//         name:     githubUser.name || githubUser.login,
-//         avatarUrl: githubUser.avatarUrl || null,
-//         provider: 'github',
-//       };
-//       upsertUser({
-//         uid:        `gh_${githubUser.login}`,
-//         email:      githubUser.email || `${githubUser.login}@github`,
-//         name:       githubUser.name || githubUser.login,
-//         picture:    githubUser.avatarUrl || null,
-//         provider:   'github',
-//         githubLogin: githubUser.login,
-//       }).catch(() => {});
-//     }
-//
-//     console.log(`[Auth] GitHub connected: ${githubUser.login}`);
-//     res.redirect('/app');
-//   } catch (err) {
-//     console.error('[Auth] GitHub callback error:', err.message);
-//     res.redirect('/?error=oauth_error');
-//   }
-// });
+router.get('/github/callback', async (req, res) => {
+  const { code } = req.query;
+  if (!code) return res.redirect('/?error=no_code');
+
+  try {
+    const tokenRes = await axios.post(
+      'https://github.com/login/oauth/access_token',
+      {
+        client_id:     process.env.GITHUB_CLIENT_ID,
+        client_secret: process.env.GITHUB_CLIENT_SECRET,
+        code,
+        redirect_uri:  process.env.GITHUB_CALLBACK_URL,
+      },
+      { headers: { Accept: 'application/json' } }
+    );
+
+    const { access_token, error } = tokenRes.data;
+    if (error || !access_token) return res.redirect('/?error=oauth_failed');
+
+    req.session.githubToken = access_token;
+    const githubUser = await getUser(access_token);
+    req.session.githubUser = githubUser;
+
+    req.session.user = {
+      login:    githubUser.login,
+      name:     githubUser.name || githubUser.login,
+      avatarUrl: githubUser.avatarUrl || null,
+      provider: 'github',
+    };
+    // FIREBASE DISABLED — Firestore persistence skipped
+    // upsertUser({ uid: `gh_${githubUser.login}`, ... }).catch(() => {});
+    // linkGitHub(...).catch(() => {});
+
+    console.log(`[Auth] GitHub connected: ${githubUser.login}`);
+    res.redirect('/app');
+  } catch (err) {
+    console.error('[Auth] GitHub callback error:', err.message);
+    res.redirect('/?error=oauth_error');
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════
 // SHARED
@@ -151,7 +136,7 @@ router.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/'));
 });
 
-// AUTH DISABLED — always returns authenticated so the frontend skips the sign-in prompt
+// GOOGLE AUTH DISABLED — app is open to all; GitHub auth is live for deployment
 // Original check commented out:
 // router.get('/status', (req, res) => {
 //   if (!isAuthenticated(req)) {
@@ -169,7 +154,7 @@ router.get('/status', (req, res) => {
     authenticated: true,
     user:      req.session.user || { login: 'guest', name: 'Guest', avatarUrl: null, provider: 'guest' },
     hasGoogle: false,
-    hasGitHub: false,
+    hasGitHub: !!req.session.githubToken,
   });
 });
 

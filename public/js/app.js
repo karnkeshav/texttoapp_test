@@ -1,4 +1,4 @@
-﻿/* ── Ready4Launch chat interface ──────────────────────────────────── */
+/* ── Ready4Launch chat interface ──────────────────────────────────── */
 
 let isStreaming = false;
 let isNewConversation = true;
@@ -500,9 +500,10 @@ function handleInputKeydown(e) {
 }
 
 // ── Sending a message ─────────────────────────────────────────────
-async function sendMessage() {
+async function sendMessage(buttonValue) {
   const input = document.getElementById('chatInput');
-  const text = input.value.trim();
+  // Use button value if provided (from choice buttons), otherwise get text from input
+  const text = buttonValue ? buttonValue : input.value.trim();
   // Allow send if there's text OR an attachment (or both)
   if ((!text && !pendingAttachment) || isStreaming) return;
 
@@ -612,14 +613,25 @@ async function sendMessage() {
           } else if (event.type === 'done') {
             aiText = event.text || aiText;
             updateAIBubble(aiMsgId, aiText);
+
+            // ── Stack selector trigger ──────────────────────────────
+            if (event.showStackSelector) {
+              renderStackSelector(aiMsgId);
+            }
+
+            // ── Edit choice trigger ──────────────────────────────────
+            if (event.showEditChoice) {
+              renderEditChoice(aiMsgId);
+            }
+
             // Carry context for post-stream handling
             if (event.editMode) {
               finalText = { text: aiText, editMode: true, editOwner: event.editOwner, editRepo: event.editRepo, editBranch: event.editBranch || 'main' };
             } else if (event.downloadable) {
               finalText = { text: aiText, downloadable: true, detectedFormat: event.detectedFormat || 'docx', pptPurpose: event.pptPurpose || null };
             } else if (event.build) {
-              // Backend confirmed this is a build response — carry the pre-parsed repoName
-              finalText = { text: aiText, build: true, repoName: event.repoName || null };
+              // Backend confirmed this is a build response — carry dry-run & deploy-mode hints
+              finalText = { text: aiText, build: true, repoName: event.repoName || null, dryRun: event.dryRun || null, deployMode: event.deployMode || null };
             } else {
               finalText = aiText;
             }
@@ -637,12 +649,18 @@ async function sendMessage() {
 
     if (finalText !== null) {
       if (finalText && typeof finalText === 'object' && finalText.editMode) {
-        showPushUpdatePrompt(finalText.text, finalText.editOwner, finalText.editRepo, finalText.editBranch);
+        // Modified edit: treat as a build-like update, show deploy card for pushing changes
+        checkForCode(finalText.text, null, null, null, {
+          editMode: true,
+          editOwner: finalText.editOwner,
+          editRepo: finalText.editRepo,
+          editBranch: finalText.editBranch
+        });
       } else if (finalText && typeof finalText === 'object' && finalText.downloadable) {
         showDownloadOptions(aiMsgId, finalText.text, finalText.detectedFormat, finalText.pptPurpose);
       } else if (finalText && typeof finalText === 'object' && finalText.build) {
-        // Backend confirmed build — pass server-side repoName hint to checkForCode
-        checkForCode(finalText.text, finalText.repoName);
+        // Backend confirmed build — pass server-side repoName hint and dry-run result
+        checkForCode(finalText.text, finalText.repoName, finalText.dryRun, finalText.deployMode);
       } else {
         checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
       }
@@ -734,7 +752,10 @@ function setStatus(text, thinking = false) {
 
 // ── Code detection & auto-deploy ─────────────────────────────────
 // hintRepoName — optional pre-parsed value from the backend done event (more reliable)
-function checkForCode(text, hintRepoName) {
+// dryRun      — { passed, issues, summary } from server-side validation
+// deployMode  — 'github-pages' | 'local' | 'manual'
+// editContext — { editMode, editOwner, editRepo, editBranch } for updating existing repos
+function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
   if (!text) return;
 
   // Extract REPO_NAME — prefer the server-side hint (more reliable than regex on large text)
@@ -747,8 +768,8 @@ function checkForCode(text, hintRepoName) {
 
   // ── Multi-file format: each block starts with a FILE: path comment ──
   // Matches ```html, ```css, ```javascript, ```js code blocks
-  const BLOCK_RE = /```(html|css|javascript|js)\s*([\s\S]*?)```/gi;
-  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*)([^\s*>]+)/i;
+  const BLOCK_RE = /```(html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml|env)\s*([\s\S]*?)```/gi;
+  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
 
   let blockMatch;
   while ((blockMatch = BLOCK_RE.exec(text)) !== null) {
@@ -792,7 +813,7 @@ function checkForCode(text, hintRepoName) {
 
   if (!files.length) return; // nothing useful to deploy
 
-  showDeployPrompt(repoName, files);
+  showDeployPrompt(repoName, files, dryRun, deployMode, editContext);
 }
 
 // ── Download options card (conversion mode) ──────────────────────
@@ -1034,28 +1055,58 @@ function loadPendingBuild() {
   } catch (_) { return null; }
 }
 
-function showDeployPrompt(repoName, files) {
+function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
   // Persist so the user doesn't lose their build on refresh / server restart
   savePendingBuild(repoName, files);
 
   const fileId = `fid-${++fileIdCounter}`;
-  pendingFiles.set(fileId, { repoName, files });
+  const isEditMode = editContext && editContext.editMode;
+  pendingFiles.set(fileId, { repoName, files, editContext });
 
   const container = document.getElementById('chatMessages');
   const div = document.createElement('div');
   div.style.cssText = 'padding:16px 0;max-width:780px;align-self:flex-start;width:100%;';
+
+  // ── Dry-run badge ─────────────────────────────────────────────
+  let dryRunBadge = '';
+  if (dryRun) {
+    const col   = dryRun.passed ? '#4ade80' : '#fbbf24';
+    const icon  = dryRun.passed ? '✅' : '⚠️';
+    const issues = dryRun.issues?.length
+      ? `<div style="margin-top:6px;font-size:12px;color:#fbbf24;">${dryRun.issues.map(i => `• ${escapeHtml(i)}`).join('<br>')}</div>`
+      : '';
+    dryRunBadge = `<div style="display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:20px;
+      background:${dryRun.passed ? 'rgba(74,222,128,0.1)' : 'rgba(251,191,36,0.1)'};
+      border:1px solid ${col};font-size:12px;color:${col};margin-bottom:14px;">
+      ${icon} ${escapeHtml(dryRun.summary)}
+    </div>${issues}`;
+  }
+
+  // ── CTA based on deploy mode or edit mode ─────────────────────
+  let ctaLabel, ctaDesc;
+  if (isEditMode) {
+    ctaLabel = '🔄 Update & Push Changes';
+    ctaDesc  = `Your modifications are ready. Push the updated code back to <strong>${editContext.editOwner}/${editContext.editRepo}</strong>.`;
+  } else if (deployMode === 'local') {
+    ctaLabel = '🚀 Push to GitHub + Launch Locally';
+    ctaDesc  = `Ready4Launch will push your code to <strong>${repoName}</strong>, then automatically start the app in a new terminal window.`;
+  } else if (deployMode === 'manual') {
+    ctaLabel = '📁 Push to GitHub';
+    ctaDesc  = `Your code will be pushed to <strong>${repoName}</strong>. Check the README for setup instructions specific to your stack.`;
+  } else {
+    ctaLabel = '🌐 Deploy to GitHub Pages';
+    ctaDesc  = `Ready4Launch will create <strong>${repoName}</strong>, push your code, and enable GitHub Pages — your site will be live in ~2 minutes.`;
+  }
+
   div.innerHTML = `
     <div style="background:rgba(124,58,237,0.1);border:1px solid rgba(124,58,237,0.25);border-radius:14px;padding:24px;">
-      <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready to deploy!</div>
-      <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-        Ready4Launch will create a new public GitHub repository called
-        <strong style="color:var(--purple-light);">${repoName}</strong>,
-        push your code, and enable GitHub Pages — automatically.
-      </p>
+      <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready!</div>
+      ${dryRunBadge}
+      <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">${ctaDesc}</p>
       <button data-fileid="${fileId}" onclick="deployToGitHub(this.dataset.fileid, this)"
               style="background:var(--grad-main);color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;font-family:var(--font);">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        Deploy to GitHub Pages
+        ${ctaLabel}
       </button>
     </div>
   `;
@@ -1068,15 +1119,32 @@ async function deployToGitHub(fileId, btn) {
   if (!pending) return;
 
   btn.disabled = true;
-  btn.innerHTML = '<span style="opacity:0.7">Creating repo &amp; deploying…</span>';
 
-  const { repoName, files } = pending;
+  const { repoName, files, editContext } = pending;
+  const isEditMode = editContext && editContext.editMode;
+
+  btn.innerHTML = `<span style="opacity:0.7">${isEditMode ? 'Pushing changes…' : 'Creating repo &amp; deploying…'}</span>`;
 
   try {
-    const res  = await fetch('/api/github/deploy', {
+    // ── Choose endpoint based on mode ────────────────────────────
+    const endpoint = isEditMode ? '/api/github/push' : '/api/github/deploy';
+    const body = isEditMode
+      ? {
+          owner: editContext.editOwner,
+          repo: editContext.editRepo,
+          files,
+          branch: editContext.editBranch || 'main'
+        }
+      : {
+          repoName,
+          files,
+          description: `Built with Ready4Launch`
+        };
+
+    const res  = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ repoName, files, description: `Built with Ready4Launch` }),
+      body: JSON.stringify(body),
     });
     const data = await res.json();
     const card = btn.closest('div[style]');
@@ -1097,24 +1165,101 @@ async function deployToGitHub(fileId, btn) {
 
     if (data.success) {
       clearPendingBuild(); // successfully deployed — no need to resume this build later
-      card.innerHTML = `
-        <div class="push-success">
-          <h4>🎉 Deployed to GitHub Pages!</h4>
-          <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-            Your code is pushed and GitHub Pages is building the site.
-            The live URL below is usually ready within <strong>2–5 minutes</strong> for a first deployment —
-            if it shows a 404, wait a moment and refresh.
-          </p>
-          <p style="margin-bottom:8px;">
-            🔗 <strong>Live URL:</strong>
-            <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
-          </p>
-          <p style="margin-bottom:0;">
-            📁 <strong>Repository:</strong>
-            <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
-          </p>
-        </div>
-      `;
+
+      const isNodeApp = !!data.localUrl;
+      const editSuccess = isEditMode;
+
+      if (editSuccess) {
+        // ── Edit success: show updated repo link ──────────────────
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>✅ Changes pushed successfully!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your modifications have been pushed to <strong>${editContext.editOwner}/${editContext.editRepo}</strong>.
+              The updated app is now live.
+            </p>
+            <p style="margin-bottom:8px;">
+              🔗 <strong>Repository:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+            <p style="margin-bottom:0;">
+              🌐 <strong>Live Site:</strong>
+              <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
+            </p>
+          </div>
+        `;
+        return;
+      }
+
+      if (isNodeApp) {
+        // ── Node.js / full-stack app ──────────────────────────────
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>🚀 App launched locally!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your Node.js app has been saved, dependencies installed, and the server
+              started in a new terminal window.
+            </p>
+            <p style="margin-bottom:8px;">
+              🖥️ <strong>Local URL:</strong>
+              <a href="${data.localUrl}" target="_blank" rel="noopener"
+                style="color:#4ade80;font-weight:700;">${data.localUrl}</a>
+              &nbsp;<span style="font-size:12px;color:var(--text-3);">(open in your browser)</span>
+            </p>
+            <p style="margin-bottom:8px;">
+              📁 <strong>Source code:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+            <p style="font-size:12px;color:var(--text-3);margin-bottom:0;">
+              💡 The app is also saved at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
+            </p>
+          </div>
+        `;
+      } else {
+        // ── Static / GitHub Pages app ─────────────────────────────
+        const apkPromptId = `apk-prompt-${Date.now()}`;
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>🎉 Deployed to GitHub Pages!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your code is pushed and GitHub Pages is building the site.
+              The live URL below is usually ready within <strong>2–5 minutes</strong> for a first deployment —
+              if it shows a 404, wait a moment and refresh.
+            </p>
+            <p style="margin-bottom:8px;">
+              🔗 <strong>Live URL:</strong>
+              <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
+            </p>
+            <p style="margin-bottom:16px;">
+              📁 <strong>Repository:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+
+            <!-- Android APK prompt -->
+            <div id="${apkPromptId}" style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px;">
+              <p style="font-size:13px;font-weight:600;margin-bottom:6px;">📱 Want this as an Android app?</p>
+              <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">
+                I can wrap your app in a native Android WebView and generate a project you can
+                build into an APK — installable on any Android device.
+              </p>
+              <div style="display:flex;gap:8px;">
+                <button onclick="buildAndroidApk('${apkPromptId}','${data.repoName}','${encodeURIComponent(data.repoName)}','${encodeURIComponent(data.pagesUrl)}')"
+                  style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border:none;
+                         border-radius:8px;padding:8px 18px;font-size:12px;font-weight:700;
+                         cursor:pointer;font-family:var(--font);">
+                  Yes, create Android APK →
+                </button>
+                <button onclick="document.getElementById('${apkPromptId}').remove()"
+                  style="background:none;border:1px solid var(--border);color:var(--text-3);
+                         border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;
+                         font-family:var(--font);">
+                  No thanks
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }
     } else {
       btn.disabled = false;
       btn.textContent = 'Retry deployment';
@@ -1332,5 +1477,567 @@ function showDailyLimitBanner(errData) {
       </button>
     </div>`;
   container.appendChild(div);
+  scrollToBottom();
+}
+
+// ── Quota Panel ───────────────────────────────────────────────────
+
+let quotaPanelOpen   = false;
+let quotaAutoRefresh = null;
+
+const PROVIDER_META = {
+  gemini:    { label: 'Gemini',    color: '#3b82f6', bg: 'rgba(59,130,246,0.1)',  border: 'rgba(59,130,246,0.25)'  },
+  groq:      { label: 'Groq',      color: '#f97316', bg: 'rgba(249,115,22,0.1)',  border: 'rgba(249,115,22,0.25)'  },
+  cerebras:  { label: 'Cerebras',  color: '#a855f7', bg: 'rgba(168,85,247,0.1)',  border: 'rgba(168,85,247,0.25)'  },
+  sambanova: { label: 'SambaNova', color: '#22c55e', bg: 'rgba(34,197,94,0.1)',   border: 'rgba(34,197,94,0.25)'   },
+};
+
+function toggleQuotaPanel() {
+  quotaPanelOpen = !quotaPanelOpen;
+  const panel   = document.getElementById('quotaPanel');
+  const overlay = document.getElementById('quotaOverlay');
+  const btn     = document.getElementById('quotaBtn');
+  if (quotaPanelOpen) {
+    panel.style.display   = 'block';
+    overlay.style.display = 'block';
+    if (btn) { btn.style.borderColor='rgba(99,102,241,0.5)'; btn.style.background='rgba(99,102,241,0.14)'; }
+    fetchQuotaData();
+    quotaAutoRefresh = setInterval(fetchQuotaData, 30000);
+  } else {
+    panel.style.display   = 'none';
+    overlay.style.display = 'none';
+    if (btn) { btn.style.borderColor='rgba(99,102,241,0.25)'; btn.style.background='rgba(99,102,241,0.08)'; }
+    if (quotaAutoRefresh) { clearInterval(quotaAutoRefresh); quotaAutoRefresh = null; }
+  }
+}
+
+function refreshQuota() {
+  const btn = document.getElementById('quotaRefreshBtn');
+  if (btn) { btn.textContent = '↻'; btn.style.animation = 'qspin 0.75s linear infinite'; btn.disabled = true; }
+  fetchQuotaData().finally(() => {
+    if (btn) { btn.style.animation = ''; btn.textContent = '↻'; btn.disabled = false; }
+  });
+}
+
+async function fetchQuotaData() {
+  try {
+    const res  = await fetch('/api/quota/status');
+    const data = await res.json();
+    renderQuotaPanel(data);
+  } catch {
+    const el = document.getElementById('quotaContent');
+    if (el) el.innerHTML = `<div style="color:#f87171;font-size:12px;padding:32px 0;text-align:center;">
+      Failed to load quota data.<br/><span style="color:var(--text-3)">Is the server running?</span></div>`;
+  }
+}
+
+function renderQuotaPanel(data) {
+  // ── Reset info ──────────────────────────────────────────────────
+  const resetEl = document.getElementById('quotaResetInfo');
+  if (resetEl && data.resetInfo) resetEl.textContent = data.resetInfo.resetLabel;
+
+  // ── Health pills (header row) ──────────────────────────────────
+  const pillsEl = document.getElementById('quotaHealthPills');
+  if (pillsEl) {
+    pillsEl.innerHTML = Object.entries(PROVIDER_META).map(([key, m]) => {
+      const configured = data.configured?.[key];
+      const models     = data.providers?.[key] || [];
+      const anyDead    = models.some(x => x.slotStatus === 'dead');
+      const anyCrit    = models.some(x => x.status === 'critical');
+      const anyWarn    = models.some(x => x.status === 'warning');
+      const dot = !configured ? '#64748b' : anyDead ? '#f87171' : anyCrit ? '#f87171' : anyWarn ? '#fbbf24' : '#4ade80';
+      return `<div style="display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:20px;
+        font-size:10px;font-weight:600;color:${m.color};background:${m.bg};border:1px solid ${m.border};">
+        <div style="width:5px;height:5px;border-radius:50%;background:${dot};flex-shrink:0;"></div>
+        ${m.label}
+      </div>`;
+    }).join('');
+  }
+
+  // ── Main content ───────────────────────────────────────────────
+  const content = document.getElementById('quotaContent');
+  if (!content) return;
+
+  const providers = ['gemini', 'groq', 'cerebras', 'sambanova'];
+  let html = '';
+
+  // Summary cards row (2×2 grid)
+  html += `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:16px;">`;
+  for (const key of providers) {
+    const m          = PROVIDER_META[key];
+    const configured = data.configured?.[key];
+    const models     = data.providers?.[key] || [];
+    const totalReq   = models.reduce((s, x) => s + (x.requestsUsed || 0), 0);
+    const totalTok   = models.reduce((s, x) => s + (x.tokensUsed   || 0), 0);
+    const maxPct     = models.reduce((max, x) => Math.max(max, x.percentUsed || 0), 0);
+    const barColor   = maxPct > 90 ? '#f87171' : maxPct > 70 ? '#fbbf24' : m.color;
+    const activeCount = models.filter(x => x.slotStatus === 'active').length;
+    const totalSlots  = models.length;
+
+    if (!configured) {
+      html += `<div style="border-radius:11px;border:1px solid var(--border);padding:12px;
+        background:rgba(255,255,255,0.01);opacity:0.45;">
+        <div style="font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:0.3px;margin-bottom:6px;">${m.label.toUpperCase()}</div>
+        <div style="font-size:11px;color:var(--text-3);">Not configured</div>
+        <div style="font-size:10px;color:var(--text-3);margin-top:2px;">Add API key to .env</div>
+      </div>`;
+      continue;
+    }
+
+    html += `<div style="border-radius:11px;border:1px solid ${m.border};padding:12px;background:${m.bg};cursor:pointer;"
+      onclick="toggleQSection('qs-${key}')">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+        <div style="font-size:10px;font-weight:700;color:${m.color};letter-spacing:0.4px;">${m.label.toUpperCase()}</div>
+        <div style="font-size:9px;color:var(--text-3);">${activeCount}/${totalSlots} slots</div>
+      </div>
+      <div style="font-size:18px;font-weight:800;color:var(--text);letter-spacing:-0.5px;line-height:1;">
+        ${totalReq > 0 ? totalReq.toLocaleString() : totalTok > 0 ? Math.round(totalTok/1000)+'K' : '0'}
+      </div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:1px;margin-bottom:8px;">
+        ${totalTok > 0 && totalReq === 0 ? 'tokens used today' : 'requests today'}
+      </div>
+      ${maxPct > 0 ? `<div class="qs-bar-bg"><div class="qs-bar-fill" style="width:${Math.min(maxPct,100)}%;background:${barColor};"></div></div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:3px;">${maxPct}% peak usage</div>` :
+      `<div class="qs-bar-bg"><div class="qs-bar-fill" style="width:0%;background:${m.color};"></div></div>
+      <div style="font-size:9px;color:var(--text-3);margin-top:3px;">0% used</div>`}
+    </div>`;
+  }
+  html += `</div>`;
+
+  // Separator
+  html += `<div style="font-size:10px;font-weight:700;color:var(--text-3);letter-spacing:0.8px;
+    text-transform:uppercase;margin-bottom:8px;padding-left:2px;">Model Breakdown</div>`;
+
+  // Accordion sections per provider
+  for (const key of providers) {
+    const m          = PROVIDER_META[key];
+    const configured = data.configured?.[key];
+    const models     = data.providers?.[key] || [];
+    if (!configured) continue;
+
+    const anyIssue = models.some(x => x.slotStatus !== 'active' || x.status === 'critical' || x.status === 'warning');
+    const chevron  = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+    html += `<div class="qs-section" id="qs-${key}">
+      <div class="qs-header" onclick="toggleQSection('qs-${key}')">
+        <div style="display:flex;align-items:center;gap:7px;">
+          <div style="width:7px;height:7px;border-radius:50%;background:${m.color};flex-shrink:0;"></div>
+          <span style="font-size:12px;font-weight:600;color:var(--text);">${m.label}</span>
+          ${anyIssue ? `<span style="font-size:9px;color:#fbbf24;font-weight:600;">⚠ check models</span>` : ''}
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;color:var(--text-3);">
+          <span style="font-size:10px;">${models.length} models</span>
+          <div id="qs-${key}-chev" style="transition:transform 0.2s;color:var(--text-3);">${chevron}</div>
+        </div>
+      </div>
+      <div class="qs-body" id="qs-${key}-body" style="display:none;">`;
+
+    for (const mdl of models) {
+      const pct    = mdl.percentUsed || 0;
+      const bar    = pct > 90 ? '#f87171' : pct > 70 ? '#fbbf24' : m.color;
+      const icon   = mdl.slotStatus === 'dead'    ? `<span style="color:#f87171;font-size:10px;">✕</span>` :
+                     mdl.slotStatus === 'cooling'  ? `<span style="color:#fbbf24;font-size:10px;">⏸</span>` :
+                     mdl.status     === 'critical' ? `<span style="color:#f87171;font-size:10px;">●</span>` :
+                     mdl.status     === 'warning'  ? `<span style="color:#fbbf24;font-size:10px;">●</span>` :
+                                                     `<span style="color:#4ade80;font-size:10px;">●</span>`;
+
+      // ── Prefer server-reported data (live from API) over local session counts ──
+      const srv = mdl.serverReported;
+      let usageStr, barPct, liveTag = '';
+
+      if (srv) {
+        // Real data from API response headers — shows actual remaining across ALL apps
+        if (srv.remainingRequests !== null && srv.limitRequests !== null) {
+          const used = srv.limitRequests - srv.remainingRequests;
+          usageStr = `${used} / ${srv.limitRequests} req`;
+          barPct   = Math.round((used / srv.limitRequests) * 100);
+        } else if (srv.remainingTokens !== null && srv.limitTokens !== null) {
+          const usedTok = srv.limitTokens - srv.remainingTokens;
+          usageStr = `${Math.round(usedTok/1000)}K / ${Math.round(srv.limitTokens/1000)}K tok`;
+          barPct   = Math.round((usedTok / srv.limitTokens) * 100);
+        } else {
+          usageStr = `${mdl.requestsUsed} req (local)`;
+          barPct   = pct;
+        }
+        const when = new Date(srv.updatedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        liveTag = `<span style="font-size:8px;color:#4ade80;margin-left:4px;" title="Live from API at ${when}">●LIVE</span>`;
+      } else {
+        // Fallback: local session counts (this app only, resets on server restart)
+        usageStr = mdl.tokensLimit
+          ? `${Math.round(mdl.tokensUsed/1000)}K / ${Math.round(mdl.tokensLimit/1000)}K tok`
+          : mdl.requestsLimit
+          ? `${mdl.requestsUsed} / ${mdl.requestsLimit} req`
+          : `${mdl.requestsUsed} req`;
+        barPct = pct;
+        liveTag = `<span style="font-size:8px;color:var(--text-3);margin-left:4px;" title="Local session count only — make an API call to get live data">●LOCAL</span>`;
+      }
+
+      const barColor2 = barPct > 90 ? '#f87171' : barPct > 70 ? '#fbbf24' : m.color;
+      const short = mdl.model.length > 24 ? mdl.model.slice(0, 22) + '…' : mdl.model;
+      const cooling = mdl.slotStatus === 'cooling' && mdl.coolingSecondsLeft > 0
+        ? `<span style="font-size:9px;color:#fbbf24;"> ${mdl.coolingSecondsLeft}s</span>` : '';
+
+      html += `<div class="qs-row">
+        <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
+          ${icon}
+          <div style="min-width:0;width:100%;">
+            <div style="display:flex;align-items:center;">
+              <span style="font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;"
+                title="${mdl.model}">${short}${cooling}</span>
+              ${liveTag}
+            </div>
+            ${(mdl.requestsLimit || mdl.tokensLimit || srv) ? `<div class="qs-bar-bg" style="margin-top:2px;"><div class="qs-bar-fill" style="width:${Math.min(barPct||0,100)}%;background:${barColor2};"></div></div>` : ''}
+          </div>
+        </div>
+        <div style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:10px;flex-shrink:0;">${usageStr}</div>
+      </div>`;
+    }
+
+    html += `</div></div>`; // close qs-body + qs-section
+  }
+
+  content.innerHTML = html;
+
+  // Auto-open first provider section
+  const firstKey = providers.find(k => data.configured?.[k]);
+  if (firstKey) openQSection('qs-' + firstKey);
+}
+
+function toggleQSection(id) {
+  const body = document.getElementById(id + '-body');
+  const chev = document.getElementById(id + '-chev');
+  if (!body) return;
+  const isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (chev) chev.style.transform = isOpen ? '' : 'rotate(180deg)';
+}
+
+function openQSection(id) {
+  const body = document.getElementById(id + '-body');
+  const chev = document.getElementById(id + '-chev');
+  if (!body) return;
+  body.style.display = 'block';
+  if (chev) chev.style.transform = 'rotate(180deg)';
+}
+// ── Android APK builder ───────────────────────────────────────────
+
+async function buildAndroidApk(promptId, repoName, encodedAppName, encodedPagesUrl) {
+  const promptEl = document.getElementById(promptId);
+  if (!promptEl) return;
+
+  const appName  = decodeURIComponent(encodedAppName);
+  const pagesUrl = decodeURIComponent(encodedPagesUrl);
+
+  // Show loading state
+  promptEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
+      <div style="width:16px;height:16px;border:2px solid rgba(34,197,94,0.3);
+        border-top-color:#22c55e;border-radius:50%;animation:qspin 0.75s linear infinite;flex-shrink:0;"></div>
+      <span style="font-size:13px;color:var(--text-2);">Generating Android project…</span>
+    </div>`;
+
+  try {
+    const res  = await fetch('/api/android/build', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ repoName, appName, pagesUrl }),
+    });
+    const data = await res.json();
+
+    if (!data.success) throw new Error(data.error || 'Build failed');
+
+    const isApk  = data.type === 'apk';
+    const label  = isApk ? '⬇️ Download APK' : '⬇️ Download Android Project (ZIP)';
+    const note   = isApk
+      ? 'APK built and ready — transfer to your Android device and install.'
+      : 'Open this ZIP in <strong>Android Studio</strong> → Sync → Build → Generate APK.';
+
+    promptEl.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:14px;">
+        <p style="font-size:13px;font-weight:600;color:#22c55e;margin-bottom:6px;">
+          📱 Android project ready!
+        </p>
+        <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">${note}</p>
+        <a href="${data.downloadUrl}" download="${data.fileName}"
+          style="display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#22c55e,#16a34a);
+                 color:#fff;text-decoration:none;border-radius:8px;padding:8px 18px;
+                 font-size:12px;font-weight:700;font-family:var(--font);">
+          ${label}
+        </a>
+        <p style="font-size:10px;color:var(--text-3);margin-top:8px;margin-bottom:0;">
+          ${isApk ? `File: ${data.fileName}` : `ZIP contains: Kotlin source, Gradle files, AndroidManifest, res/ — open in Android Studio to build APK`}
+        </p>
+      </div>`;
+
+  } catch (err) {
+    promptEl.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <p style="font-size:12px;color:#f87171;margin:0;">
+          ⚠️ Could not build Android project: ${err.message}
+        </p>
+      </div>`;
+  }
+  scrollToBottom();
+}
+// ── Stack selector UI ─────────────────────────────────────────────
+
+const STACK_OPTIONS = {
+  frontend: [
+    { id: 'html',    label: 'HTML / CSS / Vanilla JS', backends: ['none'] },
+    { id: 'react',   label: 'React', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
+    { id: 'vue',     label: 'Vue.js', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
+    { id: 'angular', label: 'Angular', backends: ['nodejs', 'java', 'csharp', 'python'] },
+    { id: 'svelte',  label: 'Svelte', backends: ['nodejs', 'python', 'go'] },
+    { id: 'nextjs',  label: 'Next.js', backends: ['nodejs'] },
+    { id: 'nuxtjs',  label: 'Nuxt.js', backends: ['nodejs', 'python'] },
+  ],
+  backend: [
+    { id: 'none',     label: 'No backend' },
+    { id: 'nodejs',   label: 'Node.js + Express' },
+    { id: 'python',   label: 'Python (FastAPI / Flask)' },
+    { id: 'java',     label: 'Java (Spring Boot)' },
+    { id: 'csharp',   label: 'C# (.NET)' },
+    { id: 'php',      label: 'PHP (Laravel)' },
+    { id: 'go',       label: 'Go' },
+    { id: 'ruby',     label: 'Ruby on Rails' },
+    { id: 'rust',     label: 'Rust' },
+  ],
+  type: [
+    { id: 'static',   label: 'Static Website', desc: 'HTML/CSS only' },
+    { id: 'dynamic',  label: 'Dynamic Web App', desc: 'Data changes from database' },
+    { id: 'spa',      label: 'Single Page App (SPA)', desc: 'React, Angular, Vue' },
+    { id: 'ssr',      label: 'Server-Side Rendered', desc: 'Next.js, Nuxt.js' },
+    { id: 'pwa',      label: 'Progressive Web App', desc: 'Behaves like native app' },
+    { id: 'jamstack', label: 'JAMstack', desc: 'Static frontend + APIs' },
+  ],
+};
+
+function renderStackSelector(aiMsgId) {
+  const bubble = document.getElementById(`${aiMsgId}-bubble`);
+  if (!bubble) return;
+
+  // Initialize state
+  window._stackFrontend = 'html';
+  window._stackBackend  = 'none';
+  window._stackType     = 'static';
+
+  const card = document.createElement('div');
+  card.className = 'stack-selector-card';
+  card.style.cssText = `margin-top:16px;padding:20px;border-radius:12px;
+    background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-family:var(--font);`;
+
+  // Build HTML with proper radio structure
+  let html = `<div style="margin-bottom:16px;"><h3 style="margin:0 0 12px;font-size:14px;font-weight:700;">Choose Your Tech Stack</h3></div>`;
+
+  // Frontend with hints
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Frontend Framework</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.frontend.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="frontend" value="${opt.id}" ${opt.id === 'html' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <div style="flex:1;">
+        <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+        <div style="font-size:10px;color:var(--text-3);margin-top:2px;">Backend: ${BACKEND_FOR_FRONTEND[opt.id]}</div>
+      </div>
+    </label>`;
+  });
+  html += `</div></div>`;
+
+  // Backend
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Backend Server</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.backend.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="backend" value="${opt.id}" ${opt.id === 'none' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+    </label>`;
+  });
+  html += `</div></div>`;
+
+  // Website Type
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Website Type</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.type.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="type" value="${opt.id}" ${opt.id === 'static' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+      ${opt.desc ? `<span style="font-size:11px;color:var(--text-3);">— ${opt.desc}</span>` : ''}
+    </label>`;
+  });
+  html += `</div></div>`;
+
+  // Validation hint box (will be updated dynamically)
+  html += `<div id="stackHint" style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);
+    border-radius:8px;padding:10px;margin-bottom:14px;font-size:11px;color:var(--text-2);">
+    ✅ Valid combination
+  </div>`;
+
+  // Build button
+  html += `<button id="stackBuildBtn" style="width:100%;background:linear-gradient(135deg,#6366f1,#4f46e5);
+    color:#fff;border:none;border-radius:8px;padding:11px;font-size:13px;font-weight:700;
+    cursor:pointer;font-family:var(--font);">Build with this stack →</button>`;
+
+  card.innerHTML = html;
+  bubble.appendChild(card);
+
+  // Helper to update hint box
+  const updateHint = () => {
+    const frontend = window._stackFrontend || 'html';
+    const backend = window._stackBackend || 'none';
+    const type = window._stackType || 'static';
+    const validation = isValidStackCombination(frontend, backend, type);
+    const hintEl = card.querySelector('#stackHint');
+    const btnEl = card.querySelector('#stackBuildBtn');
+
+    if (validation.valid) {
+      hintEl.style.background = 'rgba(34,197,94,0.08)';
+      hintEl.style.borderColor = 'rgba(34,197,94,0.2)';
+      hintEl.style.color = 'var(--text-2)';
+      hintEl.innerHTML = '✅ Valid combination - ready to build!';
+      btnEl.style.opacity = '1';
+      btnEl.disabled = false;
+      btnEl.style.cursor = 'pointer';
+    } else {
+      hintEl.style.background = 'rgba(248,113,113,0.08)';
+      hintEl.style.borderColor = 'rgba(248,113,113,0.2)';
+      hintEl.style.color = '#f87171';
+      hintEl.innerHTML = `❌ ${validation.reason}`;
+      btnEl.style.opacity = '0.6';
+      btnEl.disabled = true;
+      btnEl.style.cursor = 'not-allowed';
+    }
+  };
+
+  // Bind radio button changes
+  const frontendRadios = card.querySelectorAll('input[name="frontend"]');
+  const backendRadios = card.querySelectorAll('input[name="backend"]');
+  const typeRadios = card.querySelectorAll('input[name="type"]');
+
+  frontendRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackFrontend = e.target.value;
+      updateHint();
+    });
+  });
+
+  backendRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackBackend = e.target.value;
+      updateHint();
+    });
+  });
+
+  typeRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackType = e.target.value;
+      updateHint();
+    });
+  });
+
+  // Bind button click
+  const buildBtn = card.querySelector('#stackBuildBtn');
+  if (buildBtn) {
+    buildBtn.addEventListener('click', () => {
+      submitStackSelection(aiMsgId);
+    });
+  }
+
+  // Initial validation check
+  updateHint();
+  scrollToBottom();
+}
+
+// ── Stack validation rules ────────────────────────────────────────
+const STACK_COMPATIBILITY = {
+  html:    { backends: ['none'], types: ['static', 'jamstack'] },
+  react:   { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  vue:     { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  angular: { backends: ['nodejs', 'java', 'csharp', 'python'], types: ['spa', 'dynamic'] },
+  svelte:  { backends: ['nodejs', 'python', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  nextjs:  { backends: ['nodejs'], types: ['ssr', 'dynamic'] },
+  nuxtjs:  { backends: ['nodejs', 'python'], types: ['ssr', 'dynamic'] },
+};
+
+const BACKEND_FOR_FRONTEND = {
+  html:    'Static (no backend needed)',
+  react:   'Optional (Node.js, Python, Java, Go)',
+  vue:     'Optional (Node.js, Python, Java, Go)',
+  angular: 'Required (Node.js, Java, C#, Python)',
+  svelte:  'Optional (Node.js, Python, Go)',
+  nextjs:  'Required (Node.js only)',
+  nuxtjs:  'Required (Node.js, Python)',
+};
+
+function isValidStackCombination(frontend, backend, type) {
+  const rules = STACK_COMPATIBILITY[frontend];
+  if (!rules) return { valid: false, reason: 'Unknown frontend' };
+  if (!rules.backends.includes(backend)) {
+    return { valid: false, reason: `${frontend} doesn't work with ${backend}. Compatible: ${rules.backends.join(', ')}` };
+  }
+  if (!rules.types.includes(type)) {
+    return { valid: false, reason: `${frontend} doesn't work as ${type}. Compatible: ${rules.types.join(', ')}` };
+  }
+  return { valid: true, reason: null };
+}
+
+function submitStackSelection(aiMsgId) {
+  const frontend = window._stackFrontend || 'html';
+  const backend  = window._stackBackend  || 'none';
+  const type     = window._stackType     || 'static';
+
+  const validation = isValidStackCombination(frontend, backend, type);
+  if (!validation.valid) {
+    alert(`❌ Invalid combination:\n\n${validation.reason}`);
+    return;
+  }
+
+  // Set the chat input to the stack selection message
+  const input = document.getElementById('chatInput');
+  if (!input) {
+    console.error('Chat input not found');
+    return;
+  }
+
+  const msg = `__STACK__:${JSON.stringify({ frontend, backend, type })}`;
+  input.value = msg;
+
+  // Call sendMessage() which will read from the input field
+  sendMessage();
+}
+// ── Edit choice UI (Change stack vs Modify) ────────────────────────
+
+function renderEditChoice(aiMsgId) {
+  const bubble = document.getElementById(`${aiMsgId}-bubble`);
+  if (!bubble) return;
+
+  const card = document.createElement('div');
+  card.style.cssText = `margin-top:16px;padding:20px;border-radius:12px;
+    background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-family:var(--font);`;
+
+  card.innerHTML = `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px;">
+      <button onclick="sendMessage('1')"
+        style="background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;border:none;border-radius:8px;
+               padding:12px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);
+               transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:6px;"
+        onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+        <span style="font-size:18px;">🔄</span>
+        Change the stack
+      </button>
+      <button onclick="sendMessage('2')"
+        style="background:linear-gradient(135deg,#8b5cf6,#7c3aed);color:#fff;border:none;border-radius:8px;
+               padding:12px 16px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);
+               transition:all 0.2s;display:flex;flex-direction:column;align-items:center;gap:6px;"
+        onmouseover="this.style.opacity='0.9'" onmouseout="this.style.opacity='1'">
+        <span style="font-size:18px;">✨</span>
+        Modify within same stack
+      </button>
+    </div>
+  `;
+
+  bubble.appendChild(card);
   scrollToBottom();
 }

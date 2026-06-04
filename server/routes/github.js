@@ -1,6 +1,7 @@
 const express = require('express');
 const { listRepos, createRepo, pushFiles, enablePages, getFileContent } = require('../services/githubService');
 const { auditAndHeal } = require('../services/codeQuality');
+const { runApp, isNodeApp } = require('../services/appRunner');
 
 const router = express.Router();
 
@@ -181,10 +182,23 @@ router.post('/deploy', requireAuth, async (req, res) => {
       'Initial app — built with Ready4Launch'
     );
 
-    // 5. Enable GitHub Pages
-    const pagesUrl = await enablePages(req.session.githubToken, owner, name);
+    // 5. Enable GitHub Pages (only for static apps)
+    let pagesUrl = null;
+    if (!isNodeApp(auditedFiles)) {
+      pagesUrl = await enablePages(req.session.githubToken, owner, name);
+    }
 
-    res.json({ success: true, repoUrl, pagesUrl, repoName: name });
+    // 6. For Node.js / full-stack apps — save locally and auto-launch
+    let localUrl = null;
+    if (isNodeApp(auditedFiles)) {
+      try {
+        localUrl = await runApp(name, auditedFiles);
+      } catch (runErr) {
+        console.warn('[AppRunner] Failed to auto-launch:', runErr.message);
+      }
+    }
+
+    res.json({ success: true, repoUrl, pagesUrl, localUrl, repoName: name });
   } catch (err) {
     if (!res.headersSent) {
       console.error('Deploy error:', err.message);

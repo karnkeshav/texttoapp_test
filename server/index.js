@@ -11,6 +11,8 @@ const githubRoutes  = require('./routes/github');
 const convertRoutes = require('./routes/convert');
 const userRoutes    = require('./routes/user');
 const supportRoutes = require('./routes/support');
+const quotaRoutes   = require('./routes/quota');
+const androidRoutes = require('./routes/android');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -51,6 +53,8 @@ app.use('/api', convertRoutes);
 app.use('/api/github', githubRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/support', supportRoutes);
+app.use('/api', quotaRoutes);
+app.use('/api', androidRoutes);
 
 // ── Telemetry receiver — in-memory deduplication cache ───────────
 // Prevents identical runtime errors from being processed multiple times.
@@ -89,6 +93,9 @@ app.get('/api/diagnose', async (req, res) => {
     antigravity_agent:      process.env.ANTIGRAVITY_AGENT_ID || null,
     backend_origin:         process.env.BACKEND_ORIGIN || null,
     gemini_pool:            poolStatus(),
+    groq_pool:       process.env.GROQ_API_KEY      ? require('./services/groqPool').groqPoolStatus()           : 'not configured',
+    cerebras_pool:   process.env.CEREBRAS_API_KEY  ? require('./services/cerebrasPool').cerebrasPoolStatus()   : 'not configured',
+    sambanova_pool:  process.env.SAMBANOVA_API_KEY ? require('./services/sambanovaPool').sambanovaPoolStatus()  : 'not configured',
     gemini_live_test:       null,
     antigravity_live_test:  null,
   };

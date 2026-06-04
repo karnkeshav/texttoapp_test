@@ -9,6 +9,9 @@
 
 const axios = require('axios');
 const { pooledStream } = require('./geminiPool');
+const { groqStream }       = require('./groqPool');
+const { cerebrasStream }   = require('./cerebrasPool');
+const { sambanovaStream }  = require('./sambanovaPool');
 
 // ── Circuit breaker (module-level — shared across all requests) ───
 // When Antigravity returns 429 the breaker "trips" and all subsequent
@@ -196,15 +199,70 @@ BEHAVIOUR
 
 • enrichedNotes will contain the user's chosen theme/colours — apply them exactly. Do NOT re-ask about design.
 • NOVICE prompt → build immediately, using enrichedNotes for all context.
-• BUILDER prompt (React / Vue / Angular / Next.js / Svelte / TypeScript mentioned):
-  Reply ONE sentence: "Great idea — I'll build this as a Vanilla JS app for instant GitHub Pages deployment with zero build steps."
-  Then build immediately.
 • EXPERT prompt → follow their spec exactly.
+
+• NODE.JS / EXPRESS / FULL-STACK prompt
+  Triggered when user mentions: Node.js, Express, backend, server-side, REST API,
+  database, MongoDB, PostgreSQL, full-stack, API server, TypeScript with backend.
+  ─ Build a complete Node.js + Express application using this structure:
+
+    package.json   — dependencies (express, etc.) + "start": "node server.js"
+    server.js      — Express entry point; listen on process.env.PORT || 3000
+    public/        — static files served by Express (index.html, css/, js/)
+
+  ─ Rules:
+    • CommonJS ONLY — require() / module.exports (no ESM import/export)
+    • Always: const PORT = process.env.PORT || 3000; app.listen(PORT, ...)
+    • app.use(express.static('public')) for serving the frontend
+    • app.use(express.json()) for API endpoints
+    • Include all npm dependencies in package.json — never assume a package is installed
+    • The app runs locally — do NOT reference GitHub Pages
+    • Use in-memory data structures (Map/Array) for storage unless DB was explicitly requested
+
+• REACT / VUE / SVELTE prompt (framework name mentioned, no backend needed)
+  Build using the framework. For React/Vue without a build tool — use the CDN + Babel approach
+  so it runs immediately in the browser:
+    <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>
+    <script type="text/babel"> ... </script>
+  All logic in one index.html — no build step, no package.json needed.
+
+• TYPESCRIPT prompt (TypeScript requested, browser-only)
+  Use the CDN Babel approach with type="text/babel" and lang="ts" — transpiled in the browser.
+  No tsconfig.json or build step required for browser TypeScript.
+
+• NEXT.JS / NUXT prompt
+  Build a complete Next.js/Nuxt app with package.json, pages/, components/ etc.
+  Include a "dev": "next dev" script. Clearly state the user must run npm install && npm run dev.
 
 ASK a question ONLY when a critical FUNCTIONAL gap would break the build:
   → "expense tracker" with no description of what's tracked — ask what categories/data
   → "quiz app" with no content — ask what topic or offer to generate sample questions
   Maximum 1 question. Never ask about colours or design after the user already answered.
+
+• TECH STACK CONVERSION request (user asks to convert existing app to Node.js / React / Vue / TypeScript / Next.js):
+  DO NOT start building immediately.
+  Run a structured conversation FIRST:
+
+  STEP 1 — Educate & assess (say this clearly):
+    a) What they gain with the new stack (e.g. server-side logic, real DB, auth, APIs)
+    b) What they give up (e.g. GitHub Pages hosting won't work, needs a server to run)
+    c) What the conversion involves (new files, dependencies, deployment changes)
+
+  STEP 2 — Ask targeted questions (ask ALL of these in one message):
+    • "Do you need a real backend / database, or is this for learning the technology?"
+    • "Are you comfortable running npm install and starting a local server?"
+    • "Should I keep the same visual design and just change the underlying technology?"
+    • "Any specific libraries or features you need (e.g. authentication, REST API, WebSockets)?"
+
+  STEP 3 — Wait for answers. Summarise what you're going to build. Then ask explicitly:
+    "Ready to proceed? Reply YES to start the conversion."
+
+  STEP 4 — Only when the user says YES (or a clear affirmative): build it.
+
+  NEVER build on a vague "convert this to React" without going through steps 1–3 first.
+  The goal is to make sure the user understands the trade-offs and is making an informed choice.
 
 ══════════════════════════════════════════════════════
 OUTPUT FORMAT
@@ -219,6 +277,8 @@ Then on the VERY NEXT LINE output:
 Then output the app as SEPARATE files — one code block per file.
 The VERY FIRST LINE inside each code block must be the file path as a comment:
 
+── STATIC / VANILLA JS APPS ─────────────────────────────────────────
+
 \`\`\`html
 <!-- FILE: index.html -->
 <!DOCTYPE html>
@@ -227,7 +287,6 @@ The VERY FIRST LINE inside each code block must be the file path as a comment:
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>App Name</title>
-  <!-- Google Fonts link here if needed -->
   <link rel="stylesheet" href="css/style.css" />
 </head>
 <body>
@@ -245,54 +304,96 @@ The VERY FIRST LINE inside each code block must be the file path as a comment:
 \`\`\`javascript
 // FILE: js/app.js
 // All event handlers, data, rendering, localStorage
-// Wrap ALL initialisation in DOMContentLoaded
 \`\`\`
 
-Optional extra files for complex apps (add only if genuinely needed):
-  js/utils.js   — pure helper functions
-  js/data.js    — sample data / constants
+── NODE.JS / EXPRESS APPS ───────────────────────────────────────────
 
-Rules:
-• index.html — minimal shell: <head> links, <body> structure, nothing else
-• css/style.css — all styles (animations, layouts, themes, responsive — everything)
-• js/app.js — all JavaScript logic
-• No CDN libraries except Google Fonts. No other external dependencies.
-• Do NOT include GitHub Pages setup instructions — deployment is automated.
+\`\`\`json
+// FILE: package.json
+{
+  "name": "app-name",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "dependencies": { "express": "^4.18.2" }
+}
+\`\`\`
+
+\`\`\`javascript
+// FILE: server.js
+const express = require('express');
+const path    = require('path');
+const app     = express();
+const PORT    = process.env.PORT || 3000;
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+// ... routes ...
+app.listen(PORT, () => console.log(\`Server running on http://localhost:\${PORT}\`));
+\`\`\`
+
+\`\`\`html
+<!-- FILE: public/index.html -->
+<!-- Frontend served by Express -->
+\`\`\`
+
+\`\`\`javascript
+// FILE: public/js/app.js
+// Frontend logic — fetches from Express API endpoints
+\`\`\`
+
+Rules for ALL apps:
 • Never reveal: Google, Gemini, Antigravity, any AI model, or underlying technology.
+• Do NOT include setup instructions — deployment and launch are automated.
+• Static apps: no CDN libraries except Google Fonts; no external dependencies.
+• Node.js apps: ALL dependencies must be listed in package.json.
+• Every code block must start with the FILE: comment on line 1.
 
 ══════════════════════════════════════════════════════
 SILENT SANITY CHECK  (run before writing the first line of code)
 ══════════════════════════════════════════════════════
 
-DESIGN CHECK:
-  ✓ Hero section with gradient background + floating orb elements
-  ✓ Glassmorphism cards on all content panels (backdrop-filter: blur)
-  ✓ Gradient heading on the main title
-  ✓ fadeUp entrance animations on load (staggered delays)
-  ✓ All buttons have hover lift + active scale states
+FOR STATIC / VANILLA JS APPS:
+  DESIGN CHECK:
+    ✓ Hero section with gradient background + floating orb elements
+    ✓ Glassmorphism cards on all content panels (backdrop-filter: blur)
+    ✓ Gradient heading on the main title
+    ✓ fadeUp entrance animations on load (staggered delays)
+    ✓ All buttons have hover lift + active scale states
+  FILE STRUCTURE CHECK:
+    ✓ index.html links to css/style.css and js/app.js (correct relative paths)
+    ✓ index.html has zero inline <style> or <script> blocks
+    ✓ Each code block starts with its FILE: comment on line 1
+  FUNCTION CHECK:
+    ✓ Every button triggers a visible action
+    ✓ All localStorage reads/writes working correctly
+    ✓ All JS functions defined before use; DOM queries run after DOMContentLoaded
+  CONTENT CHECK:
+    ✓ Zero Lorem Ipsum or placeholder text
+    ✓ 4–6 realistic sample data items pre-loaded
+    ✓ Empty states shown when no data exists
+  LAYOUT CHECK:
+    ✓ Renders correctly at 375px (mobile) and 1280px (laptop)
 
-FILE STRUCTURE CHECK:
-  ✓ index.html links to css/style.css and js/app.js (correct relative paths)
-  ✓ index.html has zero inline <style> or <script> blocks
-  ✓ Each code block starts with its FILE: comment on line 1
+FOR NODE.JS / EXPRESS APPS:
+  BACKEND CHECK:
+    ✓ package.json has "start" script pointing to server.js
+    ✓ server.js uses const PORT = process.env.PORT || 3000
+    ✓ app.listen(PORT, ...) is the last line of server.js
+    ✓ All require()d packages are listed in package.json dependencies
+    ✓ express.static('public') serves the frontend
+    ✓ All API routes return JSON; use res.json() not res.send()
+    ✓ No ES module syntax (import/export) — CommonJS only
+  FRONTEND CHECK (public/):
+    ✓ public/index.html is a complete HTML page
+    ✓ Frontend JS uses fetch('/api/...') to call the Express routes
+    ✓ No hardcoded localhost URLs — use relative paths (/api/...)
+  CONTENT CHECK:
+    ✓ Zero Lorem Ipsum or placeholder text
+    ✓ Realistic sample data pre-loaded on first run
 
-FUNCTION CHECK:
-  ✓ Every button triggers a visible action
-  ✓ All localStorage reads/writes working correctly
-  ✓ All JS functions defined before use; DOM queries run after DOMContentLoaded
-  ✓ All CSS classes referenced in HTML exist in css/style.css
-
-CONTENT CHECK:
-  ✓ Zero Lorem Ipsum or placeholder text
-  ✓ 4–6 realistic sample data items pre-loaded
-  ✓ Empty states shown when no data exists
-
-LAYOUT CHECK:
-  ✓ Renders correctly at 375px (mobile)
-  ✓ Polished and spacious at 1280px (laptop)
-
-SPEC CHECK:
+SPEC CHECK (all apps):
   ✓ Every feature mentioned by the user is implemented
+  ✓ The technology requested (Node.js / React / TypeScript) is actually used
   ✓ User's chosen theme/colours from enrichedNotes are applied
 
 All checks pass → write the code. Any check fails → fix it first.
@@ -340,6 +441,17 @@ function buildContents(history, newUserMessage) {
     })),
     { role: 'user', parts: [{ text: newUserMessage }] },
   ];
+}
+
+// ── Build enriched contents for fallback pools ────────────────────
+// Mirrors the contextualMessage logic inside streamFromGeminiPool so
+// Groq/Cerebras/SambaNova receive the same plan-context enrichment.
+function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
+  let msg = newUserMessage;
+  if (enrichedNotes && enrichedNotes !== 'No additional context.') {
+    msg = `── PLAN CONTEXT ──\n${enrichedNotes}\n──────────────────\n\n${newUserMessage}`;
+  }
+  return buildContents(history, msg);
 }
 
 // ── Extract text from Antigravity SSE event ───────────────────────
@@ -430,6 +542,58 @@ async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, on
   });
 }
 
+// ── Groq → Cerebras → SambaNova fallback chain ───────────────────
+// Called when Gemini pool is exhausted. Each pool throws with a specific
+// error code so we can distinguish "exhausted" from "unexpected error".
+async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone) {
+  const contents = buildEnrichedContents(history, newUserMessage, enrichedNotes);
+
+  // ── Groq pool ─────────────────────────────────────────────────
+  try {
+    await groqStream({
+      contents,
+      config:            { temperature: 0.7, maxOutputTokens: 32768 },
+      apiKey:            process.env.GROQ_API_KEY,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      onChunk,
+      onDone,
+    });
+    console.log('[AI] Groq pool ✅');
+    return;
+  } catch (groqErr) {
+    if (groqErr.code !== 'GROQ_POOL_EXHAUSTED') throw groqErr;
+    console.warn('[AI] Groq pool exhausted — trying Cerebras pool');
+  }
+
+  // ── Cerebras pool ─────────────────────────────────────────────
+  try {
+    await cerebrasStream({
+      contents,
+      config:            { temperature: 0.7, maxOutputTokens: 8192 },
+      apiKey:            process.env.CEREBRAS_API_KEY,
+      systemInstruction: SYSTEM_INSTRUCTION,
+      onChunk,
+      onDone,
+    });
+    console.log('[AI] Cerebras pool ✅');
+    return;
+  } catch (cerebrasErr) {
+    if (cerebrasErr.code !== 'CEREBRAS_POOL_EXHAUSTED') throw cerebrasErr;
+    console.warn('[AI] Cerebras pool exhausted — trying SambaNova pool');
+  }
+
+  // ── SambaNova pool (final fallback) ───────────────────────────
+  await sambanovaStream({
+    contents,
+    config:            { temperature: 0.7, maxOutputTokens: 8192 },
+    apiKey:            process.env.SAMBANOVA_API_KEY,
+    systemInstruction: SYSTEM_INSTRUCTION,
+    onChunk,
+    onDone,
+  });
+  console.log('[AI] SambaNova pool ✅');
+}
+
 // ── Main entry point ──────────────────────────────────────────────
 async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone, enrichedNotes = '') {
   const apiKey  = process.env.GEMINI_API_KEY;
@@ -440,8 +604,16 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
   // ── Circuit breaker: skip Antigravity while cooling down after a 429 ──
   if (antigravityBreaker.isOpen()) {
     console.log(`[AI] Antigravity breaker open (${antigravityBreaker.remainingSeconds()}s left) — routing to Gemini pool`);
-    await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
-    console.log('[AI] Gemini pool ✅');
+    try {
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      console.log('[AI] Gemini pool ✅');
+      return;
+    } catch (geminiErr) {
+      if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
+      console.warn('[AI] Gemini pool exhausted — trying Groq pool');
+    }
+    // Gemini exhausted — fall through to Groq → Cerebras → SambaNova
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
     return;
   }
 
@@ -458,8 +630,15 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
       console.warn(`[AI] Antigravity ${statusLabel} (${err.message}) — falling back to Gemini pool`);
     }
     // Always fall back — Gemini pool has its own retry logic across many models
-    await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
-    console.log('[AI] Gemini pool ✅');
+    try {
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      console.log('[AI] Gemini pool ✅');
+      return;
+    } catch (geminiErr) {
+      if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
+      console.warn('[AI] Gemini pool exhausted — trying Groq pool');
+    }
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
   }
 }
 

@@ -27,8 +27,148 @@ const { fullQualityPass } = require('../services/codeQuality');
 const { pooledStream, pooledGenerate } = require('../services/geminiPool');
 const { checkGate, quickSection } = require('../middleware/packageGate');
 const { recordSession } = require('../services/firestoreService');
+const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } = require('../services/stackAdvisor');
 
 const router = express.Router();
+
+// ── Detect stack from existing code ────────────────────────────────────
+// Analyzes HTML + checks for package.json and server files
+async function detectStackFromCode(htmlCode, token, owner, repo) {
+  if (!htmlCode) return { frontend: 'html', backend: 'none', type: 'static' };
+
+  const code = htmlCode.toLowerCase();
+  let frontend = 'html';
+  let backend = 'none';
+  let type = 'static';
+
+  // ── STEP 1: Check package.json for definitive answers ────────────────
+  let hasNodeBackend = false;
+  let hasPythonBackend = false;
+  let hasJavaBackend = false;
+  let hasGoBackend = false;
+  let hasCsharpBackend = false;
+  let hasReact = false, hasVue = false, hasAngular = false, hasNuxt = false, hasNext = false, hasSvelte = false;
+
+  try {
+    if (token && owner && repo) {
+      const pkgJson = await getFileContent(token, owner, repo, 'package.json');
+      if (pkgJson) {
+        try {
+          const pkg = JSON.parse(pkgJson);
+          const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+          // Check for frameworks (definitive, not guesses)
+          hasReact = deps.react !== undefined;
+          hasVue = deps.vue !== undefined;
+          hasAngular = deps['@angular/core'] !== undefined;
+          hasSvelte = deps.svelte !== undefined;
+          hasNext = deps.next !== undefined;
+          hasNuxt = deps.nuxt !== undefined;
+
+          // Check for Node.js backend
+          hasNodeBackend = deps.express !== undefined || deps.fastify !== undefined || deps.hapi !== undefined;
+
+          // Check for Python backend
+          hasPythonBackend = deps.flask !== undefined || deps.django !== undefined || deps.fastapi !== undefined;
+
+          // Check for Java backend
+          hasJavaBackend = deps.spring !== undefined || deps['spring-boot'] !== undefined;
+
+          // Check for Go backend
+          hasGoBackend = deps.gin !== undefined || deps.echo !== undefined || deps.fiber !== undefined;
+
+          // Check for C# backend
+          hasCsharpBackend = deps.aspnet !== undefined || deps.dotnet !== undefined;
+
+          if (hasNext) frontend = 'nextjs';
+          else if (hasNuxt) frontend = 'nuxtjs';
+          else if (hasReact) frontend = 'react';
+          else if (hasVue) frontend = 'vue';
+          else if (hasAngular) frontend = 'angular';
+          else if (hasSvelte) frontend = 'svelte';
+
+          // Determine backend (priority: Node > Python > Java > Go > C#)
+          if (hasNodeBackend) backend = 'nodejs';
+          else if (hasPythonBackend) backend = 'python';
+          else if (hasJavaBackend) backend = 'java';
+          else if (hasGoBackend) backend = 'go';
+          else if (hasCsharpBackend) backend = 'csharp';
+
+          console.log(`[StackDetect] From package.json: ${frontend} + ${backend}`);
+        } catch (parseErr) {
+          console.warn('[StackDetect] Could not parse package.json:', parseErr.message);
+        }
+      }
+    }
+  } catch (e) {
+    // Silent fail on package.json fetch
+    console.log('[StackDetect] Could not fetch package.json, using HTML analysis');
+  }
+
+  // ── STEP 2: Fallback to HTML analysis if package.json not available ──
+  if (frontend === 'html') {
+    // Only if we didn't find framework in package.json
+    if (code.includes('react') && code.includes('reactdom')) frontend = 'react';
+    else if (code.includes('vue') && code.includes('vue.global')) frontend = 'vue';
+    else if (code.includes('angular')) frontend = 'angular';
+    else if (code.includes('svelte')) frontend = 'svelte';
+    else if (code.includes('next')) frontend = 'nextjs';
+    else if (code.includes('nuxt')) frontend = 'nuxtjs';
+  }
+
+  // ── STEP 3: Detect backend from HTML hints if not in package.json ────
+  if (backend === 'none') {
+    if (code.includes('express') || code.includes('server.js') || code.includes('app.js')) {
+      backend = 'nodejs';
+    } else if (code.includes('flask') || code.includes('django') || code.includes('fastapi')) {
+      backend = 'python';
+    } else if (code.includes('spring') || code.includes('springboot')) {
+      backend = 'java';
+    } else if (code.includes('gin') || code.includes('echo') || code.includes('fiber')) {
+      backend = 'go';
+    } else if (code.includes('aspnet') || code.includes('.net') || code.includes('dotnet')) {
+      backend = 'csharp';
+    }
+  }
+
+  // ── STEP 4: Detect type ────────────────────────────────────────────────
+  if (code.includes('manifest.json') && code.includes('service-worker')) {
+    type = 'pwa';
+  } else if (frontend === 'nextjs' || frontend === 'nuxtjs') {
+    type = 'ssr';
+  } else if (backend && backend !== 'none') {
+    // Has any backend (Node.js, Python, Java, Go, C#) → dynamic/SPA
+    type = 'spa';
+  } else if (frontend !== 'html') {
+    // Frontend without backend (React/Vue/Angular/Svelte CDN) → SPA
+    type = 'spa';
+  } else {
+    // Plain HTML, no backend → static
+    type = 'static';
+  }
+
+  const result = { frontend, backend, type };
+  console.log(`[StackDetect] Final detection: ${JSON.stringify(result)}`);
+  return result;
+}
+
+// ── Extract generated files from AI response text (mirrors app.js logic) ──
+function extractFilesFromText(text) {
+  const files = [];
+  const BLOCK_RE = /```(?:html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml)\s*([\s\S]*?)```/gi;
+  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
+  let m;
+  while ((m = BLOCK_RE.exec(text)) !== null) {
+    const content   = m[1].trim();
+    const firstLine = content.split('\n')[0];
+    const pathMatch = FILE_COMMENT_RE.exec(firstLine);
+    if (pathMatch) {
+      const body = content.split('\n').slice(1).join('\n').trim();
+      if (body.length >= 10) files.push({ path: pathMatch[1], content: body });
+    }
+  }
+  return files;
+}
 
 // ── Fixed mode question ───────────────────────────────────────────
 const MODE_QUESTION = `One quick question before I start — what are we building?
@@ -389,7 +529,12 @@ router.post('/chat', requireAuth, async (req, res) => {
   const hasAttachment = attachment && attachment.mimeType && attachment.data;
   const isImageAttachment = hasAttachment && attachment.mimeType.startsWith('image/');
 
-  // Reset full session on new conversation
+  // Reset full session on new conversation (but preserve edit mode if continuing)
+  const isRestoringEditMode = isEditMode && req.session.editMode &&
+    req.session.editMode.owner === editOwner &&
+    req.session.editMode.repo === editRepo &&
+    req.session.chatPhase === 'editing'; // Only if already in editing phase
+
   if (newConversation || !req.session.chatHistory) {
     req.session.chatHistory      = [];
     req.session.planNotes        = '';
@@ -402,6 +547,16 @@ router.post('/chat', requireAuth, async (req, res) => {
     req.session.editMode         = null;
     req.session.pptOriginalMsg   = '';     // PPT ask-back: user's original request
     req.session.pptPurpose       = '';     // PPT ask-back: chosen purpose key (1-6)
+    req.session.selectedStack    = null;   // stack selection (Complete Product flow)
+    req.session.stackQuestions   = null;   // stack-aware Q1-Q5
+    req.session.detectedStack    = null;   // detected stack from existing repo
+    req.session.currentCode      = null;   // existing repo code
+  }
+
+  // If restoring edit mode session, skip the choice screen and go straight to conversational
+  if (isRestoringEditMode) {
+    // Session is preserved, phase is already 'editing', ready to continue
+    console.log(`[EditMode] Resuming editing session for ${editOwner}/${editRepo}`);
   }
 
   const history = req.session.chatHistory;
@@ -701,32 +856,119 @@ router.post('/chat', requireAuth, async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════
-    // EDIT MODE — conversational questions OR code changes for an existing repo.
+    // EDIT MODE — show choice (change stack vs modify) OR apply changes
     // Triggered whenever the client sends editMode=true (any turn in the session).
     // ════════════════════════════════════════════════════════════
     if (isEditMode && editOwner && editRepo) {
       // Initialise session context on first edit-mode message
       if (isFirstMessage) {
         req.session.editMode    = { owner: editOwner, repo: editRepo, branch: editBranch };
-        req.session.chatPhase   = 'editing';
+        req.session.chatPhase   = 'edit_choice';  // NEW: show choice screen first
         req.session.currentCode = null; // fetched lazily below
       }
 
-      // Fetch (and cache) the current index.html so we only hit GitHub once per session
-      if (!req.session.currentCode) {
-        sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
-        try {
-          req.session.currentCode = await getFileContent(
-            req.session.githubToken, editOwner, editRepo, 'index.html'
-          );
-        } catch (fetchErr) {
-          sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
-          return res.end();
-        }
+      // ── PHASE: edit_choice — show "Change stack" vs "Modify app" ──────────
+      if (req.session.chatPhase === 'edit_choice' && isFirstMessage) {
+        // Fetch (and cache) the current code so we only hit GitHub once per session
         if (!req.session.currentCode) {
-          sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
+          sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
+          try {
+            // Try multiple paths for different project structures
+            const pathsToTry = [
+              'public/index.html',      // Node.js/Express apps
+              'index.html',             // Static/GitHub Pages apps
+              'dist/index.html',        // Pre-built apps
+              'src/index.html',         // Some React/Vue projects
+            ];
+
+            let foundCode = null;
+            let foundPath = null;
+
+            for (const path of pathsToTry) {
+              const code = await getFileContent(req.session.githubToken, editOwner, editRepo, path);
+              if (code !== null) {
+                foundCode = code;
+                foundPath = path;
+                break;
+              }
+            }
+
+            if (!foundCode) {
+              const pathList = pathsToTry.join(', ');
+              sendEvent('error', {
+                message: `Could not find index.html in ${editOwner}/${editRepo}.\n\n` +
+                  `Checked: ${pathList}\n\n` +
+                  `This might not be a Ready4Launch app, or the files are in a different location. ` +
+                  `Make sure your app has an index.html file.`,
+              });
+              return res.end();
+            }
+
+            req.session.currentCode = foundCode;
+            req.session.currentCodePath = foundPath;
+            console.log(`[EditMode] Found code at ${foundPath} in ${editOwner}/${editRepo}`);
+          } catch (fetchErr) {
+            sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
+            return res.end();
+          }
+        }
+
+        // ── Detect stack from existing code (checks package.json + HTML) ─────
+        const detectedStack = await detectStackFromCode(
+          req.session.currentCode,
+          req.session.githubToken,
+          editOwner,
+          editRepo
+        );
+        req.session.detectedStack = detectedStack;
+        console.log(`[EditMode] Detected stack from ${editOwner}/${editRepo}:`, detectedStack);
+
+        // ── Show edit choice screen ────────────────────────────────────
+        const choiceMsg = `I found your app in **${editOwner}/${editRepo}**. What would you like to do?\n\n` +
+          `1️⃣ **Change the tech stack** — rebuild with different frontend/backend\n` +
+          `2️⃣ **Modify within same stack** — enhance or fix the existing app`;
+
+        req.session.chatHistory.push({ role: 'user',      content: '[Entering edit mode]' });
+        req.session.chatHistory.push({ role: 'assistant', content: choiceMsg });
+        sendEvent('chunk', { text: choiceMsg });
+        sendEvent('done',  { text: choiceMsg, showEditChoice: true });
+        return res.end();
+      }
+
+      // ── PHASE: edit_choice follow-up — user picks change stack or modify ──
+      if (req.session.chatPhase === 'edit_choice' && !isFirstMessage) {
+        const choice = trimmedMessage.toLowerCase().trim();
+
+        // Choice 1: Change the stack → reset to stack selection
+        if (choice.includes('change') || choice.match(/^1|stack/i)) {
+          req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+          req.session.chatPhase = 'stack_selection';
+          req.session.selectedStack = null;
+          req.session.editMode = null; // Clear edit context, reset to build
+
+          const resetMsg = `Got it! Let's rebuild with a new stack. Choose your new tech stack:`;
+          req.session.chatHistory.push({ role: 'assistant', content: resetMsg });
+          sendEvent('chunk', { text: resetMsg });
+          sendEvent('done',  { text: resetMsg, showStackSelector: true });
           return res.end();
         }
+
+        // Choice 2: Modify within same stack → ask what changes
+        if (choice.includes('modif') || choice.match(/^2|same/i)) {
+          req.session.chatPhase = 'editing'; // Move to edit phase
+          req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+
+          const askMsg = `Perfect! What would you like me to **fix, enhance, or add** to your app?`;
+          req.session.chatHistory.push({ role: 'assistant', content: askMsg });
+          sendEvent('chunk', { text: askMsg });
+          sendEvent('done',  { text: askMsg });
+          return res.end();
+        }
+
+        // Invalid choice → re-show
+        sendEvent('chunk', { text: 'Please reply with 1 (change stack) or 2 (modify app).' });
+        sendEvent('done',  { text: 'Please reply with 1 (change stack) or 2 (modify app).', showEditChoice: true });
+        return res.end();
       }
 
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
@@ -754,21 +996,52 @@ router.post('/chat', requireAuth, async (req, res) => {
       }
 
       // ── Edit intent: apply the requested change, return full updated HTML ──
+      // OPTION A: Strengthen the prompt to ensure code blocks are generated
       const editPrompt =
+        `You are a senior developer. Your ONLY job is to return valid HTML code — nothing else.\n\n` +
         `EDIT MODE — modify this existing app. Return the COMPLETE updated HTML file.\n` +
-        `Repository: ${editOwner}/${editRepo}\n\n` +
+        `Repository: ${editOwner}/${editRepo}\n` +
+        `Branch: ${editBranch || 'main'}\n\n` +
         `CURRENT CODE:\n\`\`\`html\n${req.session.currentCode}\n\`\`\`\n\n` +
-        `USER'S CHANGE REQUEST: ${trimmedMessage}\n\n` +
-        `INSTRUCTIONS: Apply ONLY the requested changes. Keep all working features intact. ` +
-        `Output the entire updated HTML file in a single \`\`\`html block.`;
+        `USER'S CHANGE REQUEST:\n${trimmedMessage}\n\n` +
+        `CRITICAL INSTRUCTIONS:\n` +
+        `1. Apply ONLY the requested changes\n` +
+        `2. Keep all existing working features intact\n` +
+        `3. Return the ENTIRE updated HTML file in a SINGLE \`\`\`html code block\n` +
+        `4. Do NOT explain, summarize, or comment — only code\n` +
+        `5. The code block MUST start with \`\`\`html and end with \`\`\`\n` +
+        `6. Do NOT output REPO_NAME, file paths, or any text outside the code block`;
 
       sendEvent('status', { message: 'Applying your changes…' });
-      await antigravity.streamChat(editPrompt, [], null, onChunk, onEditDone, '');
 
-      if (!capturedResponse || !/```html/i.test(capturedResponse)) {
-        sendEvent('error', { message: 'Could not generate the updated code. Please try again.' });
+      // OPTION B: Retry loop — if validation fails, re-prompt with stricter formatting
+      let retries = 0;
+      const maxRetries = 2;
+      let validResponse = null;
+
+      while (retries < maxRetries && !validResponse) {
+        capturedResponse = null;
+
+        const promptForAttempt = retries === 0
+          ? editPrompt
+          : `${editPrompt}\n\nPrevious attempt failed formatting. YOU MUST output code in a \`\`\`html ... \`\`\` block. ` +
+            `Start your response with exactly: \`\`\`html\nThen the complete HTML code.\nThen: \`\`\`\nNothing else.`;
+
+        await antigravity.streamChat(promptForAttempt, [], null, onChunk, onEditDone, '');
+
+        if (capturedResponse && /```html/i.test(capturedResponse)) {
+          validResponse = capturedResponse;
+          break;
+        }
+        retries++;
+      }
+
+      if (!validResponse) {
+        sendEvent('error', { message: 'Could not generate the updated code after 2 attempts. Please try a simpler change or rebuild from scratch.' });
         return res.end();
       }
+
+      capturedResponse = validResponse;
 
       // Semantic quality pass — verify the requested changes were actually applied
       let finalEdit = capturedResponse;
@@ -863,14 +1136,20 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       if (detected === 'complete') {
         req.session.buildMode       = 'complete';
-        req.session.chatPhase       = 'complete_questioning';
+        req.session.chatPhase       = 'stack_selection';
         req.session.questionIndex   = 0;
         req.session.gatheredAnswers = [];
+        req.session.selectedStack   = null;
 
-        const q = COMPLETE_QUESTIONS[0];
-        req.session.chatHistory.push({ role: 'assistant', content: q });
-        sendEvent('chunk', { text: q });
-        sendEvent('done',  { text: q });
+        const stackIntro = `Great — let's build this properly. 🎯
+
+**First, choose your tech stack.** This tells me exactly which technologies to use so the generated code is ready to run without any rewrites.
+
+Select your stack below, then I'll ask 5 focused questions to understand your requirements fully before writing a single line of code.`;
+
+        req.session.chatHistory.push({ role: 'assistant', content: stackIntro });
+        sendEvent('chunk', { text: stackIntro });
+        sendEvent('done',  { text: stackIntro, showStackSelector: true });
         return res.end();
 
       } else {
@@ -888,25 +1167,76 @@ router.post('/chat', requireAuth, async (req, res) => {
     }
 
     // ════════════════════════════════════════════════════════════
+    // PHASE: stack_selection — user picks their tech stack
+    // Message format: __STACK__:{"type":"spa","frontend":"react","backend":"nodejs"}
+    // ════════════════════════════════════════════════════════════
+    if (req.session.chatPhase === 'stack_selection') {
+      if (!trimmedMessage.startsWith('__STACK__:')) {
+        // User typed something instead of using the selector — acknowledge and re-show
+        const retry = `Please use the stack selector above to choose your technology stack, then click "Build with this stack →" to continue.`;
+        sendEvent('chunk', { text: retry });
+        sendEvent('done',  { text: retry, showStackSelector: true });
+        return res.end();
+      }
+
+      // Parse the stack JSON
+      let stack;
+      try {
+        stack = JSON.parse(trimmedMessage.slice('__STACK__:'.length));
+      } catch {
+        sendEvent('error', { message: 'Invalid stack selection — please try again.' });
+        return res.end();
+      }
+
+      req.session.selectedStack   = stack;
+      req.session.chatPhase       = 'complete_questioning';
+      req.session.questionIndex   = 0;
+      req.session.gatheredAnswers = [];
+
+      // Generate 5 stack-aware questions
+      req.session.stackQuestions = getStackQuestions(stack);
+
+      const { getStackLabel } = require('../services/stackAdvisor');
+      const label = getStackLabel(stack);
+      const deployMode = getDeploymentMode(stack);
+      const deployNote = deployMode === 'github-pages'
+        ? '🌐 *Deploys to GitHub Pages — no server needed*'
+        : deployMode === 'local'
+        ? '💻 *Runs on localhost — I\'ll launch it automatically after building*'
+        : '📋 *Needs local setup — I\'ll include full instructions*';
+
+      const confirm = `Perfect — **${label}** it is!\n${deployNote}\n\nNow let's get the full picture. I'll ask 5 focused questions.\n\n---\n\n` + req.session.stackQuestions[0];
+
+      req.session.chatHistory.push({ role: 'user',      content: `[Stack selected: ${label}]` });
+      req.session.chatHistory.push({ role: 'assistant', content: confirm });
+      sendEvent('chunk', { text: confirm });
+      sendEvent('done',  { text: confirm });
+      return res.end();
+    }
+
+    // ════════════════════════════════════════════════════════════
     // PHASE: complete_questioning — Q1 through Q5
     // ════════════════════════════════════════════════════════════
     if (req.session.chatPhase === 'complete_questioning') {
+      // Use stack-specific questions if a stack was selected, otherwise fallback to generic
+      const questions = req.session.stackQuestions || COMPLETE_QUESTIONS;
+
       // Save answer for the current question
-      const currentQ = COMPLETE_QUESTIONS[req.session.questionIndex];
+      const currentQ = questions[req.session.questionIndex];
       req.session.gatheredAnswers.push({ q: currentQ, a: trimmedMessage });
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
       req.session.questionIndex++;
 
-      if (req.session.questionIndex < COMPLETE_QUESTIONS.length) {
+      if (req.session.questionIndex < questions.length) {
         // More questions remain
-        const nextQ = COMPLETE_QUESTIONS[req.session.questionIndex];
+        const nextQ = questions[req.session.questionIndex];
         req.session.chatHistory.push({ role: 'assistant', content: nextQ });
         sendEvent('chunk', { text: nextQ });
         sendEvent('done',  { text: nextQ });
         return res.end();
       }
 
-      // All 5 answers collected → compile spec → fall through to build
+      // All answers collected → compile spec → inject stack context → fall through to build
       sendEvent('status', { message: 'Compiling your requirements into a build brief…' });
       try {
         const spec = await compileSpec(
@@ -914,12 +1244,18 @@ router.post('/chat', requireAuth, async (req, res) => {
           req.session.originalRequest,
           apiKey
         );
-        req.session.compiledSpec = spec;
-        console.log('[Chat] Spec compiled, length:', spec.length);
+        // Prepend stack context so the AI knows exactly what to build
+        const stackCtx = req.session.selectedStack
+          ? buildStackContext(req.session.selectedStack, req.session.gatheredAnswers) + '\n\n'
+          : '';
+        req.session.compiledSpec = stackCtx + spec;
+        console.log('[Chat] Spec compiled, length:', req.session.compiledSpec.length);
       } catch (specErr) {
         console.warn('[Chat] Spec compile failed (non-fatal):', specErr.message);
-        // Fallback: join the raw answers
-        req.session.compiledSpec = req.session.gatheredAnswers
+        const stackCtx = req.session.selectedStack
+          ? buildStackContext(req.session.selectedStack, req.session.gatheredAnswers) + '\n\n'
+          : '';
+        req.session.compiledSpec = stackCtx + req.session.gatheredAnswers
           .map((qa, i) => `${i + 1}. ${qa.a}`)
           .join('\n');
       }
@@ -944,9 +1280,17 @@ router.post('/chat', requireAuth, async (req, res) => {
     // Build enrichedNotes based on mode
     let enrichedNotes = '';
 
+    // ✅ FIX: Build stack context if selected (should be included in ALL modes)
+    let stackContext = '';
+    if (req.session.selectedStack) {
+      stackContext = buildStackContext(req.session.selectedStack, req.session.gatheredAnswers || []) + '\n\n';
+      console.log('[Chat] Including stack context for:', JSON.stringify(req.session.selectedStack));
+    }
+
     if (req.session.buildMode === 'complete' && req.session.compiledSpec) {
       enrichedNotes =
         `COMPLETE PRODUCT BUILD — specification from 5-question requirements interview:\n` +
+        `${stackContext}` +  // ✅ FIX: Include stack context
         `${req.session.compiledSpec}\n\n` +
         `Original user request: "${req.session.originalRequest}"`;
 
@@ -957,6 +1301,7 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       // trimmedMessage at this point IS the style answer (prototype_style turn)
       enrichedNotes =
+        `${stackContext}` +  // ✅ FIX: Include stack context
         `${base}\n` +
         `User's chosen style: "${trimmedMessage}". Apply this throughout.\n\n` +
         `PROTOTYPE MODE: Build a SINGLE-PAGE application. ` +
@@ -964,9 +1309,20 @@ router.post('/chat', requireAuth, async (req, res) => {
         `to clearly labeled in-page sections. All sections must have complete, realistic, ` +
         `domain-specific content. NO multi-page routing or separate HTML files.`;
 
-    } else if (req.session.planNotes) {
-      // Subsequent turns in 'building' phase (app refinement)
-      enrichedNotes = req.session.planNotes;
+    } else if (req.session.planNotes || stackContext) {
+      // ✅ FIX: Include stack context for subsequent building turns
+      enrichedNotes = stackContext + (req.session.planNotes || '');
+    }
+
+    // 🔴 BUG FIX #1: Ensure enrichedNotes is NEVER empty
+    if (!enrichedNotes || enrichedNotes.trim() === '') {
+      enrichedNotes = 'Build request (no context available)';
+      if (req.session.selectedStack) {
+        enrichedNotes = `Build ${req.session.selectedStack.frontend} + ${req.session.selectedStack.backend} application`;
+      } else if (req.session.detectedStack) {
+        enrichedNotes = `Build ${req.session.detectedStack.frontend} + ${req.session.detectedStack.backend} application`;
+      }
+      console.warn('[Chat] WARNING: enrichedNotes was empty, using fallback:', enrichedNotes);
     }
 
     // For complete mode, send original request to AI (spec is in enrichedNotes)
@@ -1044,6 +1400,138 @@ router.post('/chat', requireAuth, async (req, res) => {
       }
     }
 
+    // ── Dry run retry loop: fix issues before deploying ──────────────
+    // If selected stack is set, keep fixing until dry run passes
+    let dryResult = null;
+    let dryRunAttempt = 0;
+    const MAX_DRY_RUN_RETRIES = 3;
+
+    if (req.session.selectedStack) {
+      while (dryRunAttempt < MAX_DRY_RUN_RETRIES) {
+        try {
+          const extractedFiles = extractFilesFromText(finalText);
+          dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
+
+          if (dryResult.passed) {
+            // ✅ Dry run passed — we're done
+            console.log(`[DryRun] ✅ Passed on attempt ${dryRunAttempt + 1}`);
+            break;
+          } else {
+            // ❌ Dry run failed — try to fix
+            dryRunAttempt++;
+            if (dryRunAttempt >= MAX_DRY_RUN_RETRIES) {
+              // Max retries reached — proceed with best effort
+              console.warn(`[DryRun] ⚠️  Max retries (${MAX_DRY_RUN_RETRIES}) reached. Issues: ${dryResult.summary}`);
+              break;
+            }
+
+            // Re-prompt AI to fix the specific issues
+            console.warn(`[DryRun] ⚠️  Failed on attempt ${dryRunAttempt}: ${dryResult.summary}`);
+            sendEvent('status', { message: `Fixing issues (attempt ${dryRunAttempt}/${MAX_DRY_RUN_RETRIES})…` });
+
+            // Extract REPO_NAME from previous output to maintain it
+            const repoMatch = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
+            const repoName = repoMatch ? repoMatch[1] : 'myapp';
+
+            const fixPrompt = `⚠️ CRITICAL REBUILD REQUIRED
+
+The code generation had ERRORS that must be FIXED:
+${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
+
+REPO_NAME: ${repoName}
+
+═══════════════════════════════════════════════════════════════════════
+
+CRITICAL REQUIREMENTS FOR THIS REBUILD:
+
+1. **COMPLETENESS IS MANDATORY**
+   - Every file MUST be complete — no truncation, no cut-offs, no mid-sentence endings
+   - Double-check that every closing tag, bracket, brace, and parenthesis is present
+   - The code must be SYNTACTICALLY VALID JavaScript/HTML/JSON
+
+2. **FILE MARKING — REQUIRED FOR ALL FILES**
+   You MUST mark every code block with a FILE comment as its first line:
+   - HTML: <!-- FILE: path/to/file.html -->
+   - JavaScript: // FILE: path/to/file.js
+   - JSON: // FILE: package.json (put on first line BEFORE JSON)
+   - CSS: /* FILE: path/to/file.css */
+
+   Example:
+   \`\`\`json
+   // FILE: package.json
+   { "name": "${repoName}", ... }
+   \`\`\`
+
+3. **Node.js APPS MUST INCLUDE package.json**
+   - VALID JSON format (not JS comments after the FILE line)
+   - "start" or "dev" script that runs the server
+   - ALL dependencies listed (express, react-dom, etc)
+   - No truncation — complete dependencies object
+
+4. **Node.js APPS MUST INCLUDE server.js OR index.js**
+   - Proper Express initialization
+   - All route handlers complete and closed
+   - Public folder serving configured
+   - No cut-off code
+
+5. **HTML/React apps**
+   - <!DOCTYPE html> tag present
+   - <html>, <head>, <body> properly closed
+   - All <script> tags closed
+   - React + Babel CDN links if needed
+
+6. **GENERATE COMPLETE WORKING CODE**
+   - No placeholders like "..." or "// rest of code"
+   - No "assume this is complete" comments
+   - Every function, object, array must be fully written
+
+7. **Keep REPO_NAME as: ${repoName}**
+
+═══════════════════════════════════════════════════════════════════════
+
+NOW: Regenerate the ENTIRE corrected application with ALL files complete and valid:
+            `.trim();
+
+            let fixedText = null;
+            const onFixChunk = (text) => {
+              // Don't send chunks for fix attempts — too noisy
+            };
+            const onFixDone = (text) => {
+              fixedText = text;
+            };
+
+            // Generate fix with history context
+            await antigravity.streamChat(
+              fixPrompt,
+              history.slice(-4),
+              null,
+              onFixChunk,
+              onFixDone,
+              enrichedNotes
+            );
+
+            if (fixedText) {
+              // Try to extract files from the fixed response
+              const fixedFiles = extractFilesFromText(fixedText);
+              if (fixedFiles && fixedFiles.length > 0) {
+                finalText = fixedText;
+                console.log(`[DryRun] ✅ Generated fix attempt ${dryRunAttempt} with ${fixedFiles.length} files`);
+              } else {
+                console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no valid files, keeping previous version`);
+                break;
+              }
+            } else {
+              console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no output, keeping previous version`);
+              break;
+            }
+          }
+        } catch (dryErr) {
+          console.warn('[DryRun] Error during retry:', dryErr.message);
+          break;
+        }
+      }
+    }
+
     // Finalise
     req.session.chatHistory.push({ role: 'assistant', content: finalText });
     const donePayload = { text: finalText };
@@ -1051,16 +1539,46 @@ router.post('/chat', requireAuth, async (req, res) => {
       donePayload.editMode  = true;
       donePayload.editOwner = req.session.editMode.owner;
       donePayload.editRepo  = req.session.editMode.repo;
+      // Include deployment mode for edit mode using detected stack
+      if (req.session.detectedStack) {
+        donePayload.deployMode = getDeploymentMode(req.session.detectedStack);
+        console.log(`[EditMode] Deployment mode for ${req.session.editMode.repo}: ${donePayload.deployMode}`);
+      }
     } else {
       // Flag the frontend explicitly when this is a build response.
       // This lets the client show the deploy button even if its own
       // regex-parsing of the large HTML payload fails.
-      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) || /```html/i.test(finalText);
+      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) || /```html/i.test(finalText) || /```json/i.test(finalText);
       if (hasBuildOutput) {
         donePayload.build = true;
         // Also extract REPO_NAME server-side as a reliable fallback
         const rn = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
         if (rn) donePayload.repoName = rn[1].toLowerCase();
+
+        // ── Include final dry run result ──────────────────────────
+        if (dryResult) {
+          donePayload.dryRun = dryResult;
+          console.log(`[DryRun] Final result: ${dryResult.summary}`);
+        }
+        // Include deployment mode so frontend shows correct CTA
+        // Use selected stack if available, otherwise fall back to detected stack
+        // 🔴 BUG FIX #3: Verify stack has all required fields
+        let stackForDeployment = req.session.selectedStack || req.session.detectedStack;
+        if (stackForDeployment) {
+          // Ensure all required fields are present
+          if (!stackForDeployment.frontend || !stackForDeployment.backend || !stackForDeployment.type) {
+            console.warn('[DeployMode] Stack missing fields, rebuilding:', stackForDeployment);
+            // Attempt to rebuild with detected info
+            const detected = req.session.detectedStack || {};
+            stackForDeployment = {
+              frontend: stackForDeployment.frontend || detected.frontend || 'html',
+              backend: stackForDeployment.backend || detected.backend || 'none',
+              type: stackForDeployment.type || detected.type || 'static'
+            };
+          }
+          donePayload.deployMode = getDeploymentMode(stackForDeployment);
+          console.log('[DeployMode] Final stack for deployment:', stackForDeployment, '→', donePayload.deployMode);
+        }
       }
     }
     sendEvent('done', donePayload);
