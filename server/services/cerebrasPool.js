@@ -15,6 +15,7 @@
  */
 
 const OpenAI = require('openai');
+const { trackRequest } = require('./quotaTracker');
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 
@@ -132,6 +133,7 @@ async function cerebrasGenerate({ contents, config, apiKey, tier = 'build' }) {
       });
       const text = resp.choices?.[0]?.message?.content || '';
       console.log(`[CerebrasPool] generate ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('cerebras', slot.model);
       return text;
     } catch (err) {
       if (isQuotaError(err))  { markCooling(i); continue; }
@@ -198,6 +200,7 @@ async function cerebrasStream({ contents, config, apiKey, systemInstruction, onC
         if (text) { fullText += text; onChunk(text); }
       }
       console.log(`[CerebrasPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('cerebras', slot.model);
       onDone(fullText);
       return;
     } catch (err) {

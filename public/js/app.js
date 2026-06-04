@@ -1,4 +1,4 @@
-﻿/* ── Ready4Launch chat interface ──────────────────────────────────── */
+/* ── Ready4Launch chat interface ──────────────────────────────────── */
 
 let isStreaming = false;
 let isNewConversation = true;
@@ -1333,4 +1333,139 @@ function showDailyLimitBanner(errData) {
     </div>`;
   container.appendChild(div);
   scrollToBottom();
+}
+
+// ── Quota Panel ───────────────────────────────────────────────────
+
+let quotaPanelOpen   = false;
+let quotaAutoRefresh = null;
+
+function toggleQuotaPanel() {
+  quotaPanelOpen = !quotaPanelOpen;
+  const panel   = document.getElementById('quotaPanel');
+  const overlay = document.getElementById('quotaOverlay');
+  const btn     = document.getElementById('quotaBtn');
+
+  if (quotaPanelOpen) {
+    panel.style.display   = 'block';
+    overlay.style.display = 'block';
+    if (btn) { btn.style.borderColor = 'var(--purple-light)'; btn.style.color = 'var(--purple-light)'; }
+    fetchQuotaData();
+    quotaAutoRefresh = setInterval(fetchQuotaData, 30000);
+  } else {
+    panel.style.display   = 'none';
+    overlay.style.display = 'none';
+    if (btn) { btn.style.borderColor = 'var(--border)'; btn.style.color = 'var(--text-3)'; }
+    if (quotaAutoRefresh) { clearInterval(quotaAutoRefresh); quotaAutoRefresh = null; }
+  }
+}
+
+function refreshQuota() {
+  const btn = document.getElementById('quotaRefreshBtn');
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  fetchQuotaData().finally(() => {
+    if (btn) { btn.textContent = '🔄 Refresh'; btn.disabled = false; }
+  });
+}
+
+async function fetchQuotaData() {
+  try {
+    const res  = await fetch('/api/quota/status');
+    const data = await res.json();
+    renderQuotaPanel(data);
+  } catch (err) {
+    const el = document.getElementById('quotaContent');
+    if (el) el.innerHTML = '<div style="color:#f87171;font-size:13px;padding:20px;">Failed to load quota data.</div>';
+  }
+}
+
+function renderQuotaPanel(data) {
+  const resetEl = document.getElementById('quotaResetInfo');
+  if (resetEl && data.resetInfo) {
+    resetEl.textContent = '🔄 ' + data.resetInfo.resetLabel;
+  }
+
+  const content = document.getElementById('quotaContent');
+  if (!content) return;
+
+  const providerOrder  = ['gemini', 'groq', 'cerebras', 'sambanova'];
+  const providerLabels = {
+    gemini:    '🔵 Gemini Pool',
+    groq:      '🟠 Groq Pool',
+    cerebras:  '🟣 Cerebras Pool',
+    sambanova: '🟢 SambaNova Pool',
+  };
+
+  let html = '';
+
+  for (const provider of providerOrder) {
+    if (data.configured && !data.configured[provider]) {
+      html += `<div style="margin-bottom:16px;opacity:0.5;">
+        <div style="font-size:12px;font-weight:700;color:var(--text-3);margin-bottom:8px;text-transform:uppercase;letter-spacing:0.5px;">${providerLabels[provider]}</div>
+        <div style="font-size:11px;color:var(--text-3);padding:8px 0;">Not configured — add API key to .env</div>
+      </div>`;
+      continue;
+    }
+
+    const models = data.providers[provider] || [];
+
+    html += `<div style="margin-bottom:20px;">
+      <div style="font-size:12px;font-weight:700;color:var(--text-2);margin-bottom:10px;text-transform:uppercase;letter-spacing:0.5px;padding-bottom:6px;border-bottom:1px solid var(--border);">${providerLabels[provider]}</div>`;
+
+    for (const m of models) {
+      let statusIcon  = '✅';
+      if (m.slotStatus === 'dead')         statusIcon = '❌';
+      else if (m.slotStatus === 'cooling') statusIcon = '⏸️';
+      else if (m.status === 'critical')    statusIcon = '🔴';
+      else if (m.status === 'warning')     statusIcon = '🟡';
+
+      let usageText = '';
+      let progressPct = 0;
+      let progressColor = '#4ade80';
+
+      if (m.tokensLimit) {
+        const tokK = Math.round(m.tokensUsed / 1000);
+        const limK = Math.round(m.tokensLimit / 1000);
+        usageText   = `${tokK}K / ${limK}K tokens`;
+        progressPct = m.percentUsed || 0;
+      } else if (m.requestsLimit) {
+        usageText   = `${m.requestsUsed.toLocaleString()} / ${m.requestsLimit.toLocaleString()} req`;
+        progressPct = m.percentUsed || 0;
+      } else {
+        usageText = `${m.requestsUsed} req (unlimited)`;
+      }
+
+      if (progressPct > 90)      progressColor = '#f87171';
+      else if (progressPct > 70) progressColor = '#fbbf24';
+
+      let coolingBadge = '';
+      if (m.slotStatus === 'cooling' && m.coolingSecondsLeft > 0) {
+        coolingBadge = `<span style="font-size:10px;color:#fbbf24;margin-left:6px;">cooling ${m.coolingSecondsLeft}s</span>`;
+      }
+
+      const shortName = m.model.length > 28 ? m.model.slice(0, 26) + '…' : m.model;
+
+      const progressBar = (m.requestsLimit || m.tokensLimit)
+        ? `<div style="height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:4px;">
+             <div style="height:100%;width:${Math.min(progressPct, 100)}%;background:${progressColor};border-radius:2px;transition:width 0.5s ease;"></div>
+           </div>`
+        : '';
+
+      html += `<div style="margin-bottom:10px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <div style="font-size:11px;color:var(--text-2);display:flex;align-items:center;gap:5px;">
+            <span>${statusIcon}</span>
+            <span title="${m.model}">${shortName}</span>
+            ${coolingBadge}
+          </div>
+          <div style="font-size:11px;color:var(--text-3);">${usageText}</div>
+        </div>
+        ${progressBar}
+      </div>`;
+    }
+
+    html += '</div>';
+  }
+
+  content.innerHTML = html || '<div style="color:var(--text-3);font-size:13px;">No data available.</div>';
 }

@@ -39,6 +39,7 @@
 
 const { GoogleGenAI }        = require('@google/genai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { trackRequest }       = require('./quotaTracker');
 
 // ── Pool configuration ────────────────────────────────────────────────────────
 // tier: 'build' → app generation, plan analysis, code repair, vision
@@ -280,6 +281,7 @@ async function pooledGenerate({ contents, config, apiKey, tier = 'build' }) {
         : await legacySDKGenerate(slot.model, contents, config, apiKey);
       const text = extractText(raw, slot.sdk);
       console.log(`[GeminiPool] generate ✅ slot ${i} (${slot.sdk}/${slot.model}) [${slot.tier}]`);
+      trackRequest('gemini', slot.model);
       return text;
     } catch (err) {
       if (isQuotaError(err))      { markCooling(i); continue; }
@@ -347,6 +349,7 @@ async function pooledStream({ contents, config, apiKey, systemInstruction, onChu
         if (text) { fullText += text; onChunk(text); }
       }
       console.log(`[GeminiPool] stream ✅ slot ${i} (${slot.sdk}/${slot.model}) [${slot.tier}]`);
+      trackRequest('gemini', slot.model);
       onDone(fullText);
       return;
     } catch (err) {

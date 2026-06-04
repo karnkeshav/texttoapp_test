@@ -16,6 +16,7 @@
  */
 
 const OpenAI = require('openai');
+const { trackRequest } = require('./quotaTracker');
 
 const SAMBANOVA_BASE_URL = 'https://api.sambanova.ai/v1';
 
@@ -140,6 +141,7 @@ async function sambanovaGenerate({ contents, config, apiKey, tier = 'build' }) {
       });
       const text = resp.choices?.[0]?.message?.content || '';
       console.log(`[SambanovaPool] generate ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('sambanova', slot.model);
       return text;
     } catch (err) {
       if (isQuotaError(err))  { markCooling(i); continue; }
@@ -206,6 +208,7 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
         if (text) { fullText += text; onChunk(text); }
       }
       console.log(`[SambanovaPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('sambanova', slot.model);
       onDone(fullText);
       return;
     } catch (err) {

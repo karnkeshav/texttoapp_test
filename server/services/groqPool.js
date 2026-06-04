@@ -13,6 +13,7 @@
  */
 
 const Groq = require('groq-sdk');
+const { trackRequest } = require('./quotaTracker');
 
 // ── Pool configuration ────────────────────────────────────────────
 // Each model has its own independent quota — the key advantage of pooling.
@@ -142,6 +143,7 @@ async function groqGenerate({ contents, config, apiKey, tier = 'build' }) {
       });
       const text = resp.choices?.[0]?.message?.content || '';
       console.log(`[GroqPool] generate ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('groq', slot.model);
       return text;
     } catch (err) {
       if (isQuotaError(err))  { markCooling(i); continue; }
@@ -211,6 +213,7 @@ async function groqStream({ contents, config, apiKey, systemInstruction, onChunk
         if (text) { fullText += text; onChunk(text); }
       }
       console.log(`[GroqPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
+      trackRequest('groq', slot.model);
       onDone(fullText);
       return;
     } catch (err) {
