@@ -1993,8 +1993,18 @@ function submitStackSelection(aiMsgId) {
     return;
   }
 
+  // Set the chat input to the stack selection message
+  const input = document.getElementById('chatInput');
+  if (!input) {
+    console.error('Chat input not found');
+    return;
+  }
+
   const msg = `__STACK__:${JSON.stringify({ frontend, backend, type })}`;
-  sendMessage(msg);
+  input.value = msg;
+
+  // Call sendMessage() which will read from the input field
+  sendMessage();
 }
 // ── Edit choice UI (Change stack vs Modify) ────────────────────────
 
