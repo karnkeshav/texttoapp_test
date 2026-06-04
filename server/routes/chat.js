@@ -1207,6 +1207,138 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       }
     }
 
+    // ── Dry run retry loop: fix issues before deploying ──────────────
+    // If selected stack is set, keep fixing until dry run passes
+    let dryResult = null;
+    let dryRunAttempt = 0;
+    const MAX_DRY_RUN_RETRIES = 3;
+
+    if (req.session.selectedStack) {
+      while (dryRunAttempt < MAX_DRY_RUN_RETRIES) {
+        try {
+          const extractedFiles = extractFilesFromText(finalText);
+          dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
+
+          if (dryResult.passed) {
+            // ✅ Dry run passed — we're done
+            console.log(`[DryRun] ✅ Passed on attempt ${dryRunAttempt + 1}`);
+            break;
+          } else {
+            // ❌ Dry run failed — try to fix
+            dryRunAttempt++;
+            if (dryRunAttempt >= MAX_DRY_RUN_RETRIES) {
+              // Max retries reached — proceed with best effort
+              console.warn(`[DryRun] ⚠️  Max retries (${MAX_DRY_RUN_RETRIES}) reached. Issues: ${dryResult.summary}`);
+              break;
+            }
+
+            // Re-prompt AI to fix the specific issues
+            console.warn(`[DryRun] ⚠️  Failed on attempt ${dryRunAttempt}: ${dryResult.summary}`);
+            sendEvent('status', { message: `Fixing issues (attempt ${dryRunAttempt}/${MAX_DRY_RUN_RETRIES})…` });
+
+            // Extract REPO_NAME from previous output to maintain it
+            const repoMatch = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
+            const repoName = repoMatch ? repoMatch[1] : 'myapp';
+
+            const fixPrompt = `⚠️ CRITICAL REBUILD REQUIRED
+
+The code generation had ERRORS that must be FIXED:
+${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
+
+REPO_NAME: ${repoName}
+
+═══════════════════════════════════════════════════════════════════════
+
+CRITICAL REQUIREMENTS FOR THIS REBUILD:
+
+1. **COMPLETENESS IS MANDATORY**
+   - Every file MUST be complete — no truncation, no cut-offs, no mid-sentence endings
+   - Double-check that every closing tag, bracket, brace, and parenthesis is present
+   - The code must be SYNTACTICALLY VALID JavaScript/HTML/JSON
+
+2. **FILE MARKING — REQUIRED FOR ALL FILES**
+   You MUST mark every code block with a FILE comment as its first line:
+   - HTML: <!-- FILE: path/to/file.html -->
+   - JavaScript: // FILE: path/to/file.js
+   - JSON: // FILE: package.json (put on first line BEFORE JSON)
+   - CSS: /* FILE: path/to/file.css */
+
+   Example:
+   \`\`\`json
+   // FILE: package.json
+   { "name": "${repoName}", ... }
+   \`\`\`
+
+3. **Node.js APPS MUST INCLUDE package.json**
+   - VALID JSON format (not JS comments after the FILE line)
+   - "start" or "dev" script that runs the server
+   - ALL dependencies listed (express, react-dom, etc)
+   - No truncation — complete dependencies object
+
+4. **Node.js APPS MUST INCLUDE server.js OR index.js**
+   - Proper Express initialization
+   - All route handlers complete and closed
+   - Public folder serving configured
+   - No cut-off code
+
+5. **HTML/React apps**
+   - <!DOCTYPE html> tag present
+   - <html>, <head>, <body> properly closed
+   - All <script> tags closed
+   - React + Babel CDN links if needed
+
+6. **GENERATE COMPLETE WORKING CODE**
+   - No placeholders like "..." or "// rest of code"
+   - No "assume this is complete" comments
+   - Every function, object, array must be fully written
+
+7. **Keep REPO_NAME as: ${repoName}**
+
+═══════════════════════════════════════════════════════════════════════
+
+NOW: Regenerate the ENTIRE corrected application with ALL files complete and valid:
+            `.trim();
+
+            let fixedText = null;
+            const onFixChunk = (text) => {
+              // Don't send chunks for fix attempts — too noisy
+            };
+            const onFixDone = (text) => {
+              fixedText = text;
+            };
+
+            // Generate fix with history context
+            await antigravity.streamChat(
+              fixPrompt,
+              history.slice(-4),
+              null,
+              onFixChunk,
+              onFixDone,
+              enrichedNotes
+            );
+
+            if (fixedText) {
+              // Try to extract files from the fixed response
+              const fixedFiles = extractFilesFromText(fixedText);
+              if (fixedFiles && fixedFiles.length > 0) {
+                finalText = fixedText;
+                console.log(`[DryRun] ✅ Generated fix attempt ${dryRunAttempt} with ${fixedFiles.length} files`);
+              } else {
+                console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no valid files, keeping previous version`);
+                break;
+              }
+            } else {
+              console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no output, keeping previous version`);
+              break;
+            }
+          }
+        } catch (dryErr) {
+          console.warn('[DryRun] Error during retry:', dryErr.message);
+          break;
+        }
+      }
+    }
+
     // Finalise
     req.session.chatHistory.push({ role: 'assistant', content: finalText });
     const donePayload = { text: finalText };
@@ -1225,18 +1357,14 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
         const rn = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
         if (rn) donePayload.repoName = rn[1].toLowerCase();
 
-        // ── Dry run: extract files and validate them ──────────────
+        // ── Include final dry run result ──────────────────────────
+        if (dryResult) {
+          donePayload.dryRun = dryResult;
+          console.log(`[DryRun] Final result: ${dryResult.summary}`);
+        }
+        // Include deployment mode so frontend shows correct CTA
         if (req.session.selectedStack) {
-          try {
-            const extractedFiles = extractFilesFromText(finalText);
-            const dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
-            donePayload.dryRun = dryResult;
-            // Include deployment mode so frontend shows correct CTA
-            donePayload.deployMode = getDeploymentMode(req.session.selectedStack);
-            console.log(`[DryRun] ${dryResult.summary}`);
-          } catch (dryErr) {
-            console.warn('[DryRun] Non-fatal:', dryErr.message);
-          }
+          donePayload.deployMode = getDeploymentMode(req.session.selectedStack);
         }
       }
     }
