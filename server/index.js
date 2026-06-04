@@ -12,6 +12,7 @@ const convertRoutes = require('./routes/convert');
 const userRoutes    = require('./routes/user');
 const supportRoutes = require('./routes/support');
 const quotaRoutes   = require('./routes/quota');
+const androidRoutes = require('./routes/android');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -53,6 +54,7 @@ app.use('/api/github', githubRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api', quotaRoutes);
+app.use('/api', androidRoutes);
 
 // ── Telemetry receiver — in-memory deduplication cache ───────────
 // Prevents identical runtime errors from being processed multiple times.

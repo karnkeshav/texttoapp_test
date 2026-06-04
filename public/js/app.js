@@ -1126,6 +1126,7 @@ async function deployToGitHub(fileId, btn) {
         `;
       } else {
         // ── Static / GitHub Pages app ─────────────────────────────
+        const apkPromptId = `apk-prompt-${Date.now()}`;
         card.innerHTML = `
           <div class="push-success">
             <h4>🎉 Deployed to GitHub Pages!</h4>
@@ -1138,10 +1139,33 @@ async function deployToGitHub(fileId, btn) {
               🔗 <strong>Live URL:</strong>
               <a href="${data.pagesUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.pagesUrl}</a>
             </p>
-            <p style="margin-bottom:0;">
+            <p style="margin-bottom:16px;">
               📁 <strong>Repository:</strong>
               <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
             </p>
+
+            <!-- Android APK prompt -->
+            <div id="${apkPromptId}" style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px;">
+              <p style="font-size:13px;font-weight:600;margin-bottom:6px;">📱 Want this as an Android app?</p>
+              <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">
+                I can wrap your app in a native Android WebView and generate a project you can
+                build into an APK — installable on any Android device.
+              </p>
+              <div style="display:flex;gap:8px;">
+                <button onclick="buildAndroidApk('${apkPromptId}','${data.repoName}','${encodeURIComponent(data.repoName)}','${encodeURIComponent(data.pagesUrl)}')"
+                  style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border:none;
+                         border-radius:8px;padding:8px 18px;font-size:12px;font-weight:700;
+                         cursor:pointer;font-family:var(--font);">
+                  Yes, create Android APK →
+                </button>
+                <button onclick="document.getElementById('${apkPromptId}').remove()"
+                  style="background:none;border:1px solid var(--border);color:var(--text-3);
+                         border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;
+                         font-family:var(--font);">
+                  No thanks
+                </button>
+              </div>
+            </div>
           </div>
         `;
       }
@@ -1526,12 +1550,38 @@ function renderQuotaPanel(data) {
                      mdl.status     === 'warning'  ? `<span style="color:#fbbf24;font-size:10px;">●</span>` :
                                                      `<span style="color:#4ade80;font-size:10px;">●</span>`;
 
-      const usageStr = mdl.tokensLimit
-        ? `${Math.round(mdl.tokensUsed/1000)}K / ${Math.round(mdl.tokensLimit/1000)}K tok`
-        : mdl.requestsLimit
-        ? `${mdl.requestsUsed} / ${mdl.requestsLimit} req`
-        : `${mdl.requestsUsed} req`;
+      // ── Prefer server-reported data (live from API) over local session counts ──
+      const srv = mdl.serverReported;
+      let usageStr, barPct, liveTag = '';
 
+      if (srv) {
+        // Real data from API response headers — shows actual remaining across ALL apps
+        if (srv.remainingRequests !== null && srv.limitRequests !== null) {
+          const used = srv.limitRequests - srv.remainingRequests;
+          usageStr = `${used} / ${srv.limitRequests} req`;
+          barPct   = Math.round((used / srv.limitRequests) * 100);
+        } else if (srv.remainingTokens !== null && srv.limitTokens !== null) {
+          const usedTok = srv.limitTokens - srv.remainingTokens;
+          usageStr = `${Math.round(usedTok/1000)}K / ${Math.round(srv.limitTokens/1000)}K tok`;
+          barPct   = Math.round((usedTok / srv.limitTokens) * 100);
+        } else {
+          usageStr = `${mdl.requestsUsed} req (local)`;
+          barPct   = pct;
+        }
+        const when = new Date(srv.updatedAt).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+        liveTag = `<span style="font-size:8px;color:#4ade80;margin-left:4px;" title="Live from API at ${when}">●LIVE</span>`;
+      } else {
+        // Fallback: local session counts (this app only, resets on server restart)
+        usageStr = mdl.tokensLimit
+          ? `${Math.round(mdl.tokensUsed/1000)}K / ${Math.round(mdl.tokensLimit/1000)}K tok`
+          : mdl.requestsLimit
+          ? `${mdl.requestsUsed} / ${mdl.requestsLimit} req`
+          : `${mdl.requestsUsed} req`;
+        barPct = pct;
+        liveTag = `<span style="font-size:8px;color:var(--text-3);margin-left:4px;" title="Local session count only — make an API call to get live data">●LOCAL</span>`;
+      }
+
+      const barColor2 = barPct > 90 ? '#f87171' : barPct > 70 ? '#fbbf24' : m.color;
       const short = mdl.model.length > 24 ? mdl.model.slice(0, 22) + '…' : mdl.model;
       const cooling = mdl.slotStatus === 'cooling' && mdl.coolingSecondsLeft > 0
         ? `<span style="font-size:9px;color:#fbbf24;"> ${mdl.coolingSecondsLeft}s</span>` : '';
@@ -1539,10 +1589,13 @@ function renderQuotaPanel(data) {
       html += `<div class="qs-row">
         <div style="display:flex;align-items:center;gap:6px;min-width:0;flex:1;">
           ${icon}
-          <div style="min-width:0;">
-            <div style="font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;"
-              title="${mdl.model}">${short}${cooling}</div>
-            ${(mdl.requestsLimit || mdl.tokensLimit) ? `<div class="qs-bar-bg" style="margin-top:2px;"><div class="qs-bar-fill" style="width:${Math.min(pct,100)}%;background:${bar};"></div></div>` : ''}
+          <div style="min-width:0;width:100%;">
+            <div style="display:flex;align-items:center;">
+              <span style="font-size:11px;color:var(--text-2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;"
+                title="${mdl.model}">${short}${cooling}</span>
+              ${liveTag}
+            </div>
+            ${(mdl.requestsLimit || mdl.tokensLimit || srv) ? `<div class="qs-bar-bg" style="margin-top:2px;"><div class="qs-bar-fill" style="width:${Math.min(barPct||0,100)}%;background:${barColor2};"></div></div>` : ''}
           </div>
         </div>
         <div style="font-size:10px;color:var(--text-3);white-space:nowrap;margin-left:10px;flex-shrink:0;">${usageStr}</div>
@@ -1574,4 +1627,64 @@ function openQSection(id) {
   if (!body) return;
   body.style.display = 'block';
   if (chev) chev.style.transform = 'rotate(180deg)';
+}
+// ── Android APK builder ───────────────────────────────────────────
+
+async function buildAndroidApk(promptId, repoName, encodedAppName, encodedPagesUrl) {
+  const promptEl = document.getElementById(promptId);
+  if (!promptEl) return;
+
+  const appName  = decodeURIComponent(encodedAppName);
+  const pagesUrl = decodeURIComponent(encodedPagesUrl);
+
+  // Show loading state
+  promptEl.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;padding:4px 0;">
+      <div style="width:16px;height:16px;border:2px solid rgba(34,197,94,0.3);
+        border-top-color:#22c55e;border-radius:50%;animation:qspin 0.75s linear infinite;flex-shrink:0;"></div>
+      <span style="font-size:13px;color:var(--text-2);">Generating Android project…</span>
+    </div>`;
+
+  try {
+    const res  = await fetch('/api/android/build', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ repoName, appName, pagesUrl }),
+    });
+    const data = await res.json();
+
+    if (!data.success) throw new Error(data.error || 'Build failed');
+
+    const isApk  = data.type === 'apk';
+    const label  = isApk ? '⬇️ Download APK' : '⬇️ Download Android Project (ZIP)';
+    const note   = isApk
+      ? 'APK built and ready — transfer to your Android device and install.'
+      : 'Open this ZIP in <strong>Android Studio</strong> → Sync → Build → Generate APK.';
+
+    promptEl.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:14px;">
+        <p style="font-size:13px;font-weight:600;color:#22c55e;margin-bottom:6px;">
+          📱 Android project ready!
+        </p>
+        <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">${note}</p>
+        <a href="${data.downloadUrl}" download="${data.fileName}"
+          style="display:inline-flex;align-items:center;gap:6px;background:linear-gradient(135deg,#22c55e,#16a34a);
+                 color:#fff;text-decoration:none;border-radius:8px;padding:8px 18px;
+                 font-size:12px;font-weight:700;font-family:var(--font);">
+          ${label}
+        </a>
+        <p style="font-size:10px;color:var(--text-3);margin-top:8px;margin-bottom:0;">
+          ${isApk ? `File: ${data.fileName}` : `ZIP contains: Kotlin source, Gradle files, AndroidManifest, res/ — open in Android Studio to build APK`}
+        </p>
+      </div>`;
+
+  } catch (err) {
+    promptEl.innerHTML = `
+      <div style="border-top:1px solid var(--border);padding-top:12px;">
+        <p style="font-size:12px;color:#f87171;margin:0;">
+          ⚠️ Could not build Android project: ${err.message}
+        </p>
+      </div>`;
+  }
+  scrollToBottom();
 }

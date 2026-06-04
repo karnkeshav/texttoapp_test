@@ -16,7 +16,7 @@
  */
 
 const OpenAI = require('openai');
-const { trackRequest } = require('./quotaTracker');
+const { trackRequest, updateServerLimits } = require('./quotaTracker');
 
 const SAMBANOVA_BASE_URL = 'https://api.sambanova.ai/v1';
 
@@ -132,16 +132,17 @@ async function sambanovaGenerate({ contents, config, apiKey, tier = 'build' }) {
   for (const { slot, i } of slots) {
     if (!isAvailable(i)) continue;
     try {
-      const resp = await client.chat.completions.create({
+      const { data: resp, response: httpResp } = await client.chat.completions.create({
         model:       slot.model,
         messages,
         max_tokens:  config?.maxOutputTokens || 8192,
         temperature: config?.temperature     ?? 0.7,
         stream:      false,
-      });
+      }).withResponse();
       const text = resp.choices?.[0]?.message?.content || '';
       console.log(`[SambanovaPool] generate ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
       trackRequest('sambanova', slot.model);
+      updateServerLimits('sambanova', slot.model, httpResp.headers);
       return text;
     } catch (err) {
       if (isQuotaError(err))  { markCooling(i); continue; }
@@ -195,13 +196,13 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
     if (!isAvailable(i)) continue;
     let fullText = '';
     try {
-      const stream = await client.chat.completions.create({
+      const { data: stream, response: httpResp } = await client.chat.completions.create({
         model:       slot.model,
         messages,
         max_tokens:  config?.maxOutputTokens || 8192,
         temperature: config?.temperature     ?? 0.7,
         stream:      true,
-      });
+      }).withResponse();
 
       for await (const chunk of stream) {
         const text = chunk.choices?.[0]?.delta?.content || '';
@@ -209,6 +210,7 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
       }
       console.log(`[SambanovaPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
       trackRequest('sambanova', slot.model);
+      updateServerLimits('sambanova', slot.model, httpResp.headers);
       onDone(fullText);
       return;
     } catch (err) {

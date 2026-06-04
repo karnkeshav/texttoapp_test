@@ -14,7 +14,14 @@
 
 // ── Module-level state ────────────────────────────────────────────
 /** @type {Map<string, {requests: number, tokens: number}>} */
-const usageCounts    = new Map(); // key: 'provider:model'
+const usageCounts    = new Map(); // key: 'provider:model'  — local session counts
+/**
+ * Server-reported limits captured from API response headers.
+ * key: 'provider:model' → { limitRequests, remainingRequests, limitTokens, remainingTokens, resetAt, updatedAt }
+ * These reflect ACTUAL quota (including usage outside this app).
+ * @type {Map<string, object>}
+ */
+const serverLimits   = new Map();
 let   lastReset      = new Date();
 let   resetScheduled = false;
 
@@ -55,6 +62,44 @@ const QUOTAS = {
     'Qwen2.5-7B-Instruct':          { requestsPerDay: 1440, tokensPerMin: null },
   },
 };
+
+// ── Store server-reported quota from API response headers ─────────
+/**
+ * Called by pool files after each successful API call.
+ * Extracts x-ratelimit-* headers and stores them keyed by provider:model.
+ *
+ * @param {string} provider
+ * @param {string} model
+ * @param {object} headers  — response headers object (supports .get() or plain object)
+ */
+function updateServerLimits(provider, model, headers) {
+  if (!headers) return;
+
+  const get = (k) => {
+    if (typeof headers.get === 'function') return headers.get(k);
+    return headers[k] ?? headers[k.toLowerCase()] ?? null;
+  };
+
+  const limitReq   = parseInt(get('x-ratelimit-limit-requests'))    || null;
+  const remReq     = parseInt(get('x-ratelimit-remaining-requests')) || null;
+  const limitTok   = parseInt(get('x-ratelimit-limit-tokens'))       || null;
+  const remTok     = parseInt(get('x-ratelimit-remaining-tokens'))    || null;
+  const resetReq   = get('x-ratelimit-reset-requests')  || null;
+  const resetTok   = get('x-ratelimit-reset-tokens')    || null;
+
+  // Only store if we got at least one meaningful value
+  if (limitReq === null && remReq === null && limitTok === null && remTok === null) return;
+
+  serverLimits.set(`${provider}:${model}`, {
+    limitRequests:     limitReq,
+    remainingRequests: remReq,
+    limitTokens:       limitTok,
+    remainingTokens:   remTok,
+    resetRequests:     resetReq,
+    resetTokens:       resetTok,
+    updatedAt:         new Date().toISOString(),
+  });
+}
 
 // ── Track a single request ────────────────────────────────────────
 /**
@@ -172,14 +217,28 @@ function getProviderStats(provider) {
       else if (percentUsed > 70)  status = 'warning';
     }
 
+    // Server-reported limits from API response headers (actual quota, across all apps)
+    const srv = serverLimits.get(`${provider}:${model}`) || null;
+
+    // Use server-reported remaining if available (more accurate than local tracking)
+    const actualRemaining = srv?.remainingRequests ?? null;
+    const actualLimit     = srv?.limitRequests     ?? requestsLimit;
+    const serverPct       = (actualRemaining !== null && actualLimit)
+      ? Math.round(((actualLimit - actualRemaining) / actualLimit) * 100)
+      : null;
+
     return {
       model,
+      // Local session counts
       requestsUsed,
       requestsLimit,
       tokensUsed,
       tokensLimit,
       percentUsed,
       status,
+      // Server-reported (live from API headers — reflects all usage, not just this app)
+      serverReported: srv,
+      serverPercentUsed: serverPct,
     };
   });
 }
@@ -200,4 +259,4 @@ function getAllStats() {
 // ── Start the reset chain on module load ─────────────────────────
 scheduleReset();
 
-module.exports = { trackRequest, getAllStats, getResetInfo };
+module.exports = { trackRequest, updateServerLimits, getAllStats, getResetInfo };
