@@ -1782,13 +1782,13 @@ async function buildAndroidApk(promptId, repoName, encodedAppName, encodedPagesU
 
 const STACK_OPTIONS = {
   frontend: [
-    { id: 'html',    label: 'HTML / CSS / Vanilla JS' },
-    { id: 'react',   label: 'React' },
-    { id: 'vue',     label: 'Vue.js' },
-    { id: 'angular', label: 'Angular' },
-    { id: 'svelte',  label: 'Svelte' },
-    { id: 'nextjs',  label: 'Next.js' },
-    { id: 'nuxtjs',  label: 'Nuxt.js' },
+    { id: 'html',    label: 'HTML / CSS / Vanilla JS', backends: ['none'] },
+    { id: 'react',   label: 'React', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
+    { id: 'vue',     label: 'Vue.js', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
+    { id: 'angular', label: 'Angular', backends: ['nodejs', 'java', 'csharp', 'python'] },
+    { id: 'svelte',  label: 'Svelte', backends: ['nodejs', 'python', 'go'] },
+    { id: 'nextjs',  label: 'Next.js', backends: ['nodejs'] },
+    { id: 'nuxtjs',  label: 'Nuxt.js', backends: ['nodejs', 'python'] },
   ],
   backend: [
     { id: 'none',     label: 'No backend' },
@@ -1815,32 +1815,103 @@ function renderStackSelector(aiMsgId) {
   const bubble = document.getElementById(`${aiMsgId}-bubble`);
   if (!bubble) return;
 
+  // Initialize state
+  window._stackFrontend = 'html';
+  window._stackBackend  = 'none';
+  window._stackType     = 'static';
+
   const card = document.createElement('div');
   card.className = 'stack-selector-card';
   card.style.cssText = `margin-top:16px;padding:20px;border-radius:12px;
     background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);font-family:var(--font);`;
 
-  window._stackFrontend = 'html';
-  window._stackBackend  = 'none';
-  window._stackType     = 'static';
+  // Build HTML with proper radio structure
+  let html = `<div style="margin-bottom:16px;"><h3 style="margin:0 0 12px;font-size:14px;font-weight:700;">Choose Your Tech Stack</h3></div>`;
 
-  const renderGroup = (label, options, varName) => {
-    const opts = options.map(opt => `
-      <label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
-        <input type="radio" name="${varName}" value="${opt.id}" onchange="window._stack${varName.charAt(0).toUpperCase()+varName.slice(1)}='${opt.id}'" style="cursor:pointer;margin:0;" ${opt.id === ('html'|'none'|'static') ? 'checked' : ''} />
-        <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
-      </label>
-    `).join('');
-    return `<div style="margin-bottom:14px;"><div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">${label}</div><div style="margin-left:4px;">${opts}</div></div>`;
-  };
+  // Frontend
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Frontend Framework</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.frontend.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="frontend" value="${opt.id}" ${opt.id === 'html' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+    </label>`;
+  });
+  html += `</div></div>`;
 
-  card.innerHTML = `<div style="margin-bottom:16px;"><h3 style="margin:0 0 12px;font-size:14px;font-weight:700;">Choose Your Tech Stack</h3></div>
-    ${renderGroup('Frontend Framework', STACK_OPTIONS.frontend, 'frontend')}
-    ${renderGroup('Backend Server', STACK_OPTIONS.backend, 'backend')}
-    ${renderGroup('Website Type', STACK_OPTIONS.type, 'type')}
-    <button onclick="submitStackSelection('${aiMsgId}')" style="width:100%;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:700;cursor:pointer;font-family:var(--font);margin-top:12px;">Build with this stack →</button>`;
+  // Backend
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Backend Server</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.backend.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="backend" value="${opt.id}" ${opt.id === 'none' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+    </label>`;
+  });
+  html += `</div></div>`;
 
+  // Website Type
+  html += `<div style="margin-bottom:14px;">
+    <div style="font-size:12px;font-weight:700;color:var(--text);margin-bottom:8px;text-transform:uppercase;">Website Type</div>
+    <div style="margin-left:4px;">`;
+  STACK_OPTIONS.type.forEach(opt => {
+    html += `<label style="display:flex;align-items:center;gap:8px;margin-bottom:8px;cursor:pointer;padding:6px 8px;border-radius:6px;">
+      <input type="radio" name="type" value="${opt.id}" ${opt.id === 'static' ? 'checked' : ''} style="cursor:pointer;margin:0;" />
+      <span style="font-size:13px;color:var(--text-2);">${opt.label}</span>
+      ${opt.desc ? `<span style="font-size:11px;color:var(--text-3);">— ${opt.desc}</span>` : ''}
+    </label>`;
+  });
+  html += `</div></div>`;
+
+  // Hint box
+  html += `<div style="background:rgba(59,130,246,0.08);border:1px solid rgba(59,130,246,0.2);
+    border-radius:8px;padding:10px;margin-bottom:14px;font-size:11px;color:var(--text-2);">
+    <strong>💡 Tip:</strong> Next.js/Nuxt require Node.js. React/Vue work with any backend or standalone.
+  </div>`;
+
+  // Build button
+  html += `<button id="stackBuildBtn" style="width:100%;background:linear-gradient(135deg,#6366f1,#4f46e5);
+    color:#fff;border:none;border-radius:8px;padding:11px;font-size:13px;font-weight:700;
+    cursor:pointer;font-family:var(--font);">Build with this stack →</button>`;
+
+  card.innerHTML = html;
+
+  // Add event listeners AFTER DOM insertion
   bubble.appendChild(card);
+
+  // Bind radio button changes
+  const frontendRadios = card.querySelectorAll('input[name="frontend"]');
+  const backendRadios = card.querySelectorAll('input[name="backend"]');
+  const typeRadios = card.querySelectorAll('input[name="type"]');
+
+  frontendRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackFrontend = e.target.value;
+    });
+  });
+
+  backendRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackBackend = e.target.value;
+    });
+  });
+
+  typeRadios.forEach(input => {
+    input.addEventListener('change', (e) => {
+      window._stackType = e.target.value;
+    });
+  });
+
+  // Bind button click
+  const buildBtn = card.querySelector('#stackBuildBtn');
+  if (buildBtn) {
+    buildBtn.addEventListener('click', () => {
+      submitStackSelection(aiMsgId);
+    });
+  }
+
   scrollToBottom();
 }
 
