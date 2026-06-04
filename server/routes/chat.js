@@ -31,9 +31,9 @@ const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } =
 
 const router = express.Router();
 
-// ── Detect stack from existing HTML code ──────────────────────────────
-// Analyzes the HTML to guess which frontend framework was used
-function detectStackFromCode(htmlCode) {
+// ── Detect stack from existing code ────────────────────────────────────
+// Analyzes HTML + checks for package.json and server files
+async function detectStackFromCode(htmlCode, token, owner, repo) {
   if (!htmlCode) return { frontend: 'html', backend: 'none', type: 'static' };
 
   const code = htmlCode.toLowerCase();
@@ -41,26 +41,81 @@ function detectStackFromCode(htmlCode) {
   let backend = 'none';
   let type = 'static';
 
-  // Detect frontend
-  if (code.includes('react') && code.includes('reactdom')) frontend = 'react';
-  else if (code.includes('vue') && code.includes('vue.global')) frontend = 'vue';
-  else if (code.includes('angular/core')) frontend = 'angular';
-  else if (code.includes('svelte')) frontend = 'svelte';
-  else if (code.includes('next')) frontend = 'nextjs';
-  else if (code.includes('nuxt')) frontend = 'nuxtjs';
+  // ── STEP 1: Check package.json for definitive answers ────────────────
+  let hasNodeBackend = false;
+  let hasReact = false, hasVue = false, hasAngular = false, hasNuxt = false, hasNext = false, hasSvelte = false;
 
-  // Detect backend hints from HTML structure
-  if (code.includes('express') || code.includes('server.js') || code.includes('/api/')) {
-    backend = 'nodejs';
-    type = 'spa';
+  try {
+    if (token && owner && repo) {
+      const pkgJson = await getFileContent(token, owner, repo, 'package.json');
+      if (pkgJson) {
+        try {
+          const pkg = JSON.parse(pkgJson);
+          const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+
+          // Check for frameworks (definitive, not guesses)
+          hasReact = deps.react !== undefined;
+          hasVue = deps.vue !== undefined;
+          hasAngular = deps['@angular/core'] !== undefined;
+          hasSvelte = deps.svelte !== undefined;
+          hasNext = deps.next !== undefined;
+          hasNuxt = deps.nuxt !== undefined;
+
+          // Check for Node.js backend
+          hasNodeBackend = deps.express !== undefined || deps.fastify !== undefined || deps.hapi !== undefined;
+
+          if (hasNext) frontend = 'nextjs';
+          else if (hasNuxt) frontend = 'nuxtjs';
+          else if (hasReact) frontend = 'react';
+          else if (hasVue) frontend = 'vue';
+          else if (hasAngular) frontend = 'angular';
+          else if (hasSvelte) frontend = 'svelte';
+
+          if (hasNodeBackend) backend = 'nodejs';
+
+          console.log(`[StackDetect] From package.json: ${frontend} + ${backend}`);
+        } catch (parseErr) {
+          console.warn('[StackDetect] Could not parse package.json:', parseErr.message);
+        }
+      }
+    }
+  } catch (e) {
+    // Silent fail on package.json fetch
+    console.log('[StackDetect] Could not fetch package.json, using HTML analysis');
   }
 
-  // Detect type
-  if (code.includes('manifest.json') || code.includes('service-worker')) type = 'pwa';
-  else if (code.includes('babel-standalone') || (frontend === 'react' && !code.includes('manifest'))) type = 'spa';
-  else if (code.includes('server-side')) type = 'ssr';
+  // ── STEP 2: Fallback to HTML analysis if package.json not available ──
+  if (frontend === 'html') {
+    // Only if we didn't find framework in package.json
+    if (code.includes('react') && code.includes('reactdom')) frontend = 'react';
+    else if (code.includes('vue') && code.includes('vue.global')) frontend = 'vue';
+    else if (code.includes('angular')) frontend = 'angular';
+    else if (code.includes('svelte')) frontend = 'svelte';
+    else if (code.includes('next')) frontend = 'nextjs';
+    else if (code.includes('nuxt')) frontend = 'nuxtjs';
+  }
 
-  return { frontend, backend, type };
+  // ── STEP 3: Detect backend from HTML hints if not in package.json ────
+  if (backend === 'none') {
+    if (code.includes('express') || code.includes('server.js') || code.includes('/api/')) {
+      backend = 'nodejs';
+    }
+  }
+
+  // ── STEP 4: Detect type ────────────────────────────────────────────────
+  if (code.includes('manifest.json') && code.includes('service-worker')) {
+    type = 'pwa';
+  } else if (frontend === 'nextjs' || frontend === 'nuxtjs') {
+    type = 'ssr';
+  } else if (backend === 'nodejs' || (frontend !== 'html' && frontend !== 'nextjs')) {
+    type = 'spa';
+  } else {
+    type = 'static';
+  }
+
+  const result = { frontend, backend, type };
+  console.log(`[StackDetect] Final detection: ${JSON.stringify(result)}`);
+  return result;
 }
 
 // ── Extract generated files from AI response text (mirrors app.js logic) ──
@@ -780,23 +835,57 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       // ── PHASE: edit_choice — show "Change stack" vs "Modify app" ──────────
       if (req.session.chatPhase === 'edit_choice' && isFirstMessage) {
-        // Fetch (and cache) the current index.html so we only hit GitHub once per session
+        // Fetch (and cache) the current code so we only hit GitHub once per session
         if (!req.session.currentCode) {
           sendEvent('status', { message: `Fetching code from ${editOwner}/${editRepo}…` });
           try {
-            req.session.currentCode = await getFileContent(req.session.githubToken, editOwner, editRepo, 'index.html');
+            // Try multiple paths for different project structures
+            const pathsToTry = [
+              'public/index.html',      // Node.js/Express apps
+              'index.html',             // Static/GitHub Pages apps
+              'dist/index.html',        // Pre-built apps
+              'src/index.html',         // Some React/Vue projects
+            ];
+
+            let foundCode = null;
+            let foundPath = null;
+
+            for (const path of pathsToTry) {
+              const code = await getFileContent(req.session.githubToken, editOwner, editRepo, path);
+              if (code !== null) {
+                foundCode = code;
+                foundPath = path;
+                break;
+              }
+            }
+
+            if (!foundCode) {
+              const pathList = pathsToTry.join(', ');
+              sendEvent('error', {
+                message: `Could not find index.html in ${editOwner}/${editRepo}.\n\n` +
+                  `Checked: ${pathList}\n\n` +
+                  `This might not be a Ready4Launch app, or the files are in a different location. ` +
+                  `Make sure your app has an index.html file.`,
+              });
+              return res.end();
+            }
+
+            req.session.currentCode = foundCode;
+            req.session.currentCodePath = foundPath;
+            console.log(`[EditMode] Found code at ${foundPath} in ${editOwner}/${editRepo}`);
           } catch (fetchErr) {
             sendEvent('error', { message: `Could not fetch code: ${fetchErr.message}` });
             return res.end();
           }
         }
-        if (!req.session.currentCode) {
-          sendEvent('error', { message: `No index.html found in ${editOwner}/${editRepo}.` });
-          return res.end();
-        }
 
-        // ── Detect stack from existing code ───────────────────────────────
-        const detectedStack = detectStackFromCode(req.session.currentCode);
+        // ── Detect stack from existing code (checks package.json + HTML) ─────
+        const detectedStack = await detectStackFromCode(
+          req.session.currentCode,
+          req.session.githubToken,
+          editOwner,
+          editRepo
+        );
         req.session.detectedStack = detectedStack;
         console.log(`[EditMode] Detected stack from ${editOwner}/${editRepo}:`, detectedStack);
 
