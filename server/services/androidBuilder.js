@@ -14,6 +14,7 @@
 const path    = require('path');
 const fs      = require('fs');
 const os      = require('os');
+const zlib    = require('zlib');
 const { execSync } = require('child_process');
 
 const APKS_ROOT = path.join(__dirname, '..', '..', 'generated-apks');
@@ -388,15 +389,118 @@ function findFile(dir, name) {
   return null;
 }
 
-// ── Create ZIP using platform tools ─────────────────────────────
-function createZip(appDir, zipPath) {
-  if (process.platform === 'win32') {
+// ── Pure Node.js CRC-32 (used by ZIP format) ─────────────────────
+const CRC32_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) {
+    let c = i;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+    t[i] = c;
+  }
+  return t;
+})();
+function crc32(buf) {
+  let c = 0xFFFFFFFF;
+  for (const b of buf) c = CRC32_TABLE[(c ^ b) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+// ── Build a valid ZIP buffer in pure Node.js ──────────────────────
+function buildZipBuffer(entries) {
+  const localHeaders = [], parts = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const nameBytes  = Buffer.from(entry.name);
+    const compressed = zlib.deflateRawSync(entry.data, { level: 6 });
+    const checksum   = crc32(entry.data);
+    const local      = Buffer.alloc(30 + nameBytes.length);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 6); local.writeUInt16LE(8, 8);
+    local.writeUInt16LE(0, 10); local.writeUInt16LE(0, 12);
+    local.writeUInt32LE(checksum, 14);
+    local.writeUInt32LE(compressed.length, 18);
+    local.writeUInt32LE(entry.data.length, 22);
+    local.writeUInt16LE(nameBytes.length, 26); local.writeUInt16LE(0, 28);
+    nameBytes.copy(local, 30);
+    localHeaders.push({ name: nameBytes, checksum,
+      compressedSize: compressed.length, uncompressedSize: entry.data.length, offset });
+    parts.push(local, compressed);
+    offset += local.length + compressed.length;
+  }
+  const centralParts = localHeaders.map(h => {
+    const cd = Buffer.alloc(46 + h.name.length);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6); cd.writeUInt16LE(0, 8);
+    cd.writeUInt16LE(8, 10); cd.writeUInt16LE(0, 12); cd.writeUInt16LE(0, 14);
+    cd.writeUInt32LE(h.checksum, 16);
+    cd.writeUInt32LE(h.compressedSize, 20); cd.writeUInt32LE(h.uncompressedSize, 24);
+    cd.writeUInt16LE(h.name.length, 28);
+    cd.writeUInt16LE(0, 30); cd.writeUInt16LE(0, 32); cd.writeUInt16LE(0, 34);
+    cd.writeUInt16LE(0, 36); cd.writeUInt32LE(0, 38); cd.writeUInt32LE(h.offset, 42);
+    h.name.copy(cd, 46);
+    return cd;
+  });
+  const centralDir = Buffer.concat(centralParts);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(0, 4); eocd.writeUInt16LE(0, 6);
+  eocd.writeUInt16LE(localHeaders.length, 8); eocd.writeUInt16LE(localHeaders.length, 10);
+  eocd.writeUInt32LE(centralDir.length, 12); eocd.writeUInt32LE(offset, 16);
+  eocd.writeUInt16LE(0, 20);
+  return Buffer.concat([...parts, centralDir, eocd]);
+}
+
+// ── Collect all files recursively ────────────────────────────────
+function collectDirEntries(dir) {
+  const entries = [];
+  const walk = (current, prefix) => {
+    for (const item of fs.readdirSync(current)) {
+      const full = path.join(current, item);
+      const rel  = prefix ? `${prefix}/${item}` : item;
+      if (fs.statSync(full).isDirectory()) walk(full, rel);
+      else entries.push({ name: rel, data: fs.readFileSync(full) });
+    }
+  };
+  walk(dir, '');
+  return entries;
+}
+
+// ── createZip: pure Node primary, system zip fallback, python3 last resort ──
+async function createZip(appDir, zipPath) {
+  // Method 1: Pure Node.js — no system tools required
+  try {
+    const entries = collectDirEntries(appDir);
+    if (entries.length === 0) throw new Error('No files in project directory');
+    const buf = buildZipBuffer(entries);
+    fs.writeFileSync(zipPath, buf);
+    const magic = buf.slice(0, 4);
+    if (magic[0] !== 0x50 || magic[1] !== 0x4B) throw new Error('Invalid ZIP magic bytes');
+    console.log(`[AndroidBuilder] ZIP (pure-Node): ${entries.length} files, ${buf.length} bytes`);
+    return;
+  } catch (e) {
+    console.warn('[AndroidBuilder] Pure-Node ZIP failed:', e.message);
+  }
+  // Method 2: System zip binary
+  try {
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Compress-Archive -Path '${appDir}\\*' -DestinationPath '${zipPath}' -Force"`, { timeout: 60_000 });
+    } else {
+      execSync(`cd "${appDir}" && zip -r "${zipPath}" .`, { timeout: 60_000 });
+    }
+    console.log('[AndroidBuilder] ZIP (system zip)');
+    return;
+  } catch (e) {
+    console.warn('[AndroidBuilder] System zip failed:', e.message);
+  }
+  // Method 3: Python3 — always available on Ubuntu containers
+  try {
     execSync(
-      `powershell -Command "Compress-Archive -Path '${appDir}\\*' -DestinationPath '${zipPath}' -Force"`,
+      `python3 -c "import zipfile,os; z=zipfile.ZipFile('${zipPath}','w',zipfile.ZIP_DEFLATED); [z.write(os.path.join(r,f),os.path.relpath(os.path.join(r,f),'${appDir}')) for r,d,files in os.walk('${appDir}') for f in files]; z.close()"`,
       { timeout: 60_000 }
     );
-  } else {
-    execSync(`cd "${appDir}" && zip -r "${zipPath}" .`, { timeout: 60_000 });
+    console.log('[AndroidBuilder] ZIP (python3)');
+    return;
+  } catch (e) {
+    throw new Error(`All ZIP methods failed. Last error: ${e.message.slice(0, 200)}`);
   }
 }
 
@@ -454,7 +558,10 @@ async function buildAndroidProject(repoName, appName, pagesUrl) {
 
   // Fallback: ZIP the project for Android Studio
   const zipPath = path.join(APKS_ROOT, `${repoName}-android.zip`);
-  createZip(appDir, zipPath);
+  await createZip(appDir, zipPath);
+  if (!fs.existsSync(zipPath) || fs.statSync(zipPath).size < 100) {
+    throw new Error('ZIP creation failed or file is empty');
+  }
   console.log(`[AndroidBuilder] ZIP created: ${zipPath}`);
   return { type: 'zip', filePath: zipPath, fileName: `${repoName}-android.zip` };
 }

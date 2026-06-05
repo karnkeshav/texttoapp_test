@@ -24,9 +24,32 @@ const runningApps = new Map();
 
 // ── Helpers ──────────────────────────────────────────────────────
 
+// ── Backend type detectors ────────────────────────────────────────
+
 /** Detect whether this is a Node.js app by looking for package.json */
 function isNodeApp(files) {
   return files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
+}
+function isGoApp(files) {
+  return files.some(f => f.path === 'go.mod' || f.path === 'main.go');
+}
+function isPythonApp(files) {
+  return files.some(f => ['requirements.txt', 'main.py', 'app.py', 'server.py'].includes(f.path));
+}
+function isRubyApp(files) {
+  return files.some(f => f.path === 'Gemfile' || f.path === 'config.ru');
+}
+/** Returns true for ANY app that has a backend server (not purely static) */
+function isBackendApp(files) {
+  return isNodeApp(files) || isGoApp(files) || isPythonApp(files) || isRubyApp(files);
+}
+/** Returns { cmd, type, defaultPort } for the detected backend, or null */
+function getRunInfo(files) {
+  if (isNodeApp(files))   return { cmd: 'npm install && npm start',                               type: 'nodejs',  defaultPort: 3000 };
+  if (isGoApp(files))     return { cmd: 'go run .',                                               type: 'go',      defaultPort: 8080 };
+  if (isPythonApp(files)) return { cmd: 'pip install -r requirements.txt && python main.py',       type: 'python',  defaultPort: 8000 };
+  if (isRubyApp(files))   return { cmd: 'bundle install && ruby app.rb',                          type: 'ruby',    defaultPort: 4567 };
+  return null;
 }
 
 /** Parse the port from package.json start script or server.js, default 3000 */
@@ -108,68 +131,70 @@ function stopApp(repoName) {
  * @returns {Promise<string>} localUrl — e.g. "http://localhost:4001"
  */
 async function runApp(repoName, files) {
-  if (!isNodeApp(files)) return null; // static apps don't need local runner
+  const runInfo = getRunInfo(files);
+  if (!runInfo) return null; // purely static — no server needed
 
-  const appDir  = path.join(APPS_ROOT, repoName);
-  const suggestedPort = detectPort(files);
-  const port    = await findFreePort(suggestedPort === 3000 ? 4000 : suggestedPort);
+  const appDir = path.join(APPS_ROOT, repoName);
+  const port   = await findFreePort(runInfo.defaultPort === 3000 ? 4000 : runInfo.defaultPort);
 
-  // Stop any previous run
   stopApp(repoName);
-
-  // Write all files
   saveFiles(appDir, files);
 
-  // Patch port so there's no conflict with the Ready4Launch server (3000)
-  patchPort(appDir, port);
+  // For Node.js: patch the port in server.js (existing logic)
+  if (runInfo.type === 'nodejs') patchPort(appDir, port);
 
-  console.log(`[AppRunner] Installing dependencies for ${repoName}…`);
+  console.log(`[AppRunner] Launching ${runInfo.type} app: ${repoName} on port ${port}`);
 
+  let child;
   if (process.platform === 'win32') {
-    // ── Windows: open a new PowerShell window ────────────────────
-    const ps1 = [
-      `Set-Location -Path '${appDir}'`,
-      `Write-Host "[Ready4Launch] Installing dependencies..." -ForegroundColor Cyan`,
-      `npm install --prefer-offline 2>&1 | Out-Null`,
-      `Write-Host "[Ready4Launch] Starting ${repoName} on port ${port}..." -ForegroundColor Green`,
-      `$env:PORT = '${port}'`,
-      `node server.js`,
-    ].join('; ');
+    const cmd = runInfo.type === 'nodejs'
+      ? `npm install --prefer-offline 2>&1 | Out-Null; $env:PORT='${port}'; node server.js`
+      : runInfo.cmd;
+    child = spawn('powershell.exe', ['-NoExit', '-Command',
+      `Set-Location -Path '${appDir}'; Write-Host "Starting ${repoName}..." -ForegroundColor Green; ${cmd}`
+    ], { detached: true, stdio: 'ignore', shell: false });
 
-    const child = spawn('powershell.exe', [
-      '-NoExit',
-      '-Command', ps1,
-    ], {
-      detached: true,
-      stdio:    'ignore',
-      shell:    false,
-    });
-    child.unref();
-    runningApps.set(repoName, { port, process: child });
+  } else if (process.platform === 'darwin') {
+    // macOS: write a launch script and open Terminal
+    const script = path.join(appDir, '_start.sh');
+    fs.writeFileSync(script, `#!/bin/bash\ncd "${appDir}"\nPORT=${port} ${runInfo.cmd}\n`, 'utf8');
+    fs.chmodSync(script, 0o755);
+    child = spawn('open', ['-a', 'Terminal', script], { detached: true, stdio: 'ignore' });
 
   } else {
-    // ── Unix/Mac: open a new terminal tab ────────────────────────
-    const cmd = `npm install --prefer-offline > /dev/null 2>&1 && PORT=${port} node server.js`;
-    let child;
-
-    if (process.platform === 'darwin') {
-      child = spawn('open', ['-a', 'Terminal', appDir], { detached: true, stdio: 'ignore' });
-    } else {
-      // Linux: try common terminal emulators
-      child = spawn('bash', ['-c', `cd '${appDir}' && ${cmd}`], {
-        detached: true, stdio: 'ignore',
-      });
+    // Linux: try common terminal emulators; headless fallback for Render
+    const fullCmd = `cd "${appDir}" && PORT=${port} ${runInfo.cmd}`;
+    const terminals = ['gnome-terminal', 'xterm', 'konsole', 'x-terminal-emulator'];
+    let launched = false;
+    for (const term of terminals) {
+      try {
+        execSync(`which ${term}`, { stdio: 'ignore' });
+        if (term === 'gnome-terminal') {
+          child = spawn(term, ['--', 'bash', '-c', `${fullCmd}; exec bash`],
+            { detached: true, stdio: 'ignore' });
+        } else {
+          child = spawn(term, ['-e', `bash -c "${fullCmd}; exec bash"`],
+            { detached: true, stdio: 'ignore' });
+        }
+        launched = true;
+        break;
+      } catch (_) {}
     }
-    child.unref();
-    runningApps.set(repoName, { port, process: child });
+    if (!launched) {
+      child = spawn('bash', ['-c', `${fullCmd} &`], { detached: true, stdio: 'ignore' });
+    }
   }
 
-  // Wait a moment for the server to start
-  await new Promise(r => setTimeout(r, 2000));
+  if (child) child.unref();
+  runningApps.set(repoName, { port, process: child });
+
+  // Wait for server to start (longer for Go/Python which need compile/install)
+  const warmup = runInfo.type === 'nodejs' ? 2500 : 4000;
+  await new Promise(r => setTimeout(r, warmup));
 
   const localUrl = `http://localhost:${port}`;
   console.log(`[AppRunner] ${repoName} should be running at ${localUrl}`);
   return localUrl;
 }
 
-module.exports = { runApp, isNodeApp };
+module.exports = { runApp, isNodeApp, isBackendApp, getRunInfo };

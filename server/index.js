@@ -12,7 +12,8 @@ const convertRoutes = require('./routes/convert');
 const userRoutes    = require('./routes/user');
 const supportRoutes = require('./routes/support');
 const quotaRoutes   = require('./routes/quota');
-const androidRoutes = require('./routes/android');
+const androidRoutes   = require('./routes/android');
+const runLocalRoutes  = require('./routes/runLocal');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -55,6 +56,7 @@ app.use('/api/user', userRoutes);
 app.use('/api/support', supportRoutes);
 app.use('/api', quotaRoutes);
 app.use('/api', androidRoutes);
+app.use('/api', runLocalRoutes);
 
 // ── Telemetry receiver — in-memory deduplication cache ───────────
 // Prevents identical runtime errors from being processed multiple times.
@@ -163,6 +165,19 @@ app.get('/support', (req, res) => {
 // /github-guide — step-by-step guide to connecting GitHub
 app.get('/github-guide', (req, res) => {
   res.sendFile(path.join(__dirname, '..', 'public', 'github-guide.html'));
+});
+
+// ── Debug session endpoint (test protocol only) ───────────────────
+app.get('/api/debug/session', (req, res) => {
+  res.json({
+    chatPhase:        req.session.chatPhase        || null,
+    buildMode:        req.session.buildMode        || null,
+    editMode:         req.session.editMode         || null,
+    selectedStack:    req.session.selectedStack    || null,
+    detectedStack:    req.session.detectedStack    || null,
+    originalEditRepo: req.session.originalEditRepo || null,
+    historyLength:    req.session.chatHistory?.length ?? 0,
+  });
 });
 
 // ── Start ─────────────────────────────────────────────────────────
