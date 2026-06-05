@@ -7,7 +7,7 @@
     "prestart": "node scripts/kill-port.js",
     "start": "node server/index.js",
     "predev": "node scripts/kill-port.js",
-    "dev": "nodemon server/index.js",
+    "dev": "nodemon --ignore generated-apps/ server/index.js",
     "test": "vitest run --config vitest.config.mjs",
     "test:watch": "vitest --config vitest.config.mjs",
     "test:e2e": "playwright test --config playwright.config.mjs",
@@ -38,6 +38,7 @@
     "@playwright/test": "^1.60.0",
     "jsdom": "^29.1.1",
     "nodemon": "^3.1.0",
+    "supertest": "^7.2.2",
     "vitest": "^4.1.7"
   },
   "engines": {

@@ -132,99 +132,112 @@ function stopApp(repoName) {
 }
 
 /**
- * Save files, install deps, and launch the Node.js app in a new terminal window.
- * Returns the localhost URL.
+ * Save files, install deps, and launch the app in a new terminal window.
+ * Robust version with error handling and Go+Node concurrent support.
  *
  * @param {string} repoName
  * @param {Array<{path:string, content:string}>} files
  * @returns {Promise<string>} localUrl — e.g. "http://localhost:4001"
  */
 async function runApp(repoName, files) {
-  const runInfo = getRunInfo(files);
-  if (!runInfo) return null; // purely static — no server needed
+  if (!needsLocalRunner(files)) return null;
 
-  const appDir = path.join(APPS_ROOT, repoName);
-  const port   = await findFreePort(runInfo.defaultPort === 3000 ? 4000 : runInfo.defaultPort);
+  const appDir         = path.join(APPS_ROOT, repoName);
+  const suggestedPort  = detectPort(files);
+  const port           = await findFreePort(suggestedPort === 3000 ? 4000 : suggestedPort);
 
   stopApp(repoName);
   saveFiles(appDir, files);
+  patchPort(appDir, port);
 
-  // For Node.js: patch the port in server.js (existing logic)
-  if (runInfo.type === 'nodejs') patchPort(appDir, port);
+  console.log(`[AppRunner] Installing dependencies for ${repoName}…`);
 
-  console.log(`[AppRunner] Launching ${runInfo.type} app: ${repoName} on port ${port}`);
+  try {
+    if (process.platform === 'win32') {
+      const hasNode = files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
+      const hasGo   = files.some(f => f.path === 'go.mod' || f.path.endsWith('.go'));
 
-  let child;
-  if (process.platform === 'win32') {
-    const hasNode = files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
-    const hasGo   = files.some(f => f.path === 'go.mod' || f.path.endsWith('.go'));
+      const ps1 = [
+        `Set-Location -Path '${appDir}'`,
+        `$env:PORT = '${port}'`
+      ];
 
-    const ps1 = [
-      `Set-Location -Path '${appDir}'`,
-      `$env:PORT = '${port}'`
-    ];
+      if (hasNode) {
+        ps1.push(`Write-Host "[Ready4Launch] Installing Node dependencies..." -ForegroundColor Cyan`);
+        ps1.push(`npm install --prefer-offline 2>&1 | Out-Null`);
+      }
+      if (hasGo) {
+        ps1.push(`Write-Host "[Ready4Launch] Tending Go modules..." -ForegroundColor Cyan`);
+        ps1.push(`if (Test-Path go.mod) { go mod tidy 2>&1 | Out-Null }`);
+      }
 
-    if (hasNode) {
-      ps1.push(`Write-Host "[Ready4Launch] Installing Node dependencies..." -ForegroundColor Cyan`);
-      ps1.push(`npm install --prefer-offline 2>&1 | Out-Null`);
-    }
-    if (hasGo) {
-      ps1.push(`Write-Host "[Ready4Launch] Tending Go modules..." -ForegroundColor Cyan`);
-      ps1.push(`if (Test-Path go.mod) { go mod tidy 2>&1 | Out-Null }`);
-    }
+      ps1.push(`Write-Host "[Ready4Launch] Starting servers..." -ForegroundColor Green`);
 
-    ps1.push(`Write-Host "[Ready4Launch] Starting servers..." -ForegroundColor Green`);
+      if (hasNode && hasGo) {
+        ps1.push(`Start-Process -NoNewWindow npm -ArgumentList "start"`);
+        ps1.push(`go run .`);
+      } else if (hasGo) {
+        ps1.push(`go run .`);
+      } else {
+        ps1.push(`npm start >$null 2>&1 || node server.js`);
+      }
 
-    if (hasNode && hasGo) {
-      ps1.push(`Start-Process -NoNewWindow npm -ArgumentList "start"`);
-      ps1.push(`go run .`);
-    } else if (hasGo) {
-      ps1.push(`go run .`);
+      const child = spawn('powershell.exe', ['-NoExit', '-Command', ps1.join('; ')], {
+        detached: true, stdio: 'ignore', shell: false,
+      });
+
+      // PREVENT CRASH: Handle asynchronous spawn errors
+      child.on('error', (err) => {
+        console.error('[AppRunner] PowerShell spawn error:', err);
+      });
+
+      child.unref();
+      runningApps.set(repoName, { port, process: child });
+
     } else {
-      ps1.push(`npm start >$null 2>&1 || node server.js`);
-    }
+      // ── Unix/Mac logic updated for Go + React ───────────────
+      const hasNode = files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
+      const hasGo   = files.some(f => f.path === 'go.mod' || f.path.endsWith('.go'));
 
-    child = spawn('powershell.exe', ['-NoExit', '-Command', ps1.join('; ')], {
-      detached: true, stdio: 'ignore', shell: false,
-    });
+      let cmd = `cd '${appDir}' && export PORT=${port} && `;
+      if (hasNode) cmd += `npm install --prefer-offline > /dev/null 2>&1 ; `;
+      if (hasGo)   cmd += `(test -f go.mod && go mod tidy > /dev/null 2>&1) ; `;
 
-  } else if (process.platform === 'darwin') {
-    // macOS: write a launch script and open Terminal
-    const script = path.join(appDir, '_start.sh');
-    fs.writeFileSync(script, `#!/bin/bash\ncd "${appDir}"\nPORT=${port} ${runInfo.cmd}\n`, 'utf8');
-    fs.chmodSync(script, 0o755);
-    child = spawn('open', ['-a', 'Terminal', script], { detached: true, stdio: 'ignore' });
+      if (hasNode && hasGo) {
+        cmd += `npm start & go run .`;
+      } else if (hasGo) {
+        cmd += `go run .`;
+      } else {
+        cmd += `npm start >/dev/null 2>&1 || node server.js`;
+      }
 
-  } else {
-    // Linux: try common terminal emulators; headless fallback for Render
-    const fullCmd = `cd "${appDir}" && PORT=${port} ${runInfo.cmd}`;
-    const terminals = ['gnome-terminal', 'xterm', 'konsole', 'x-terminal-emulator'];
-    let launched = false;
-    for (const term of terminals) {
-      try {
-        execSync(`which ${term}`, { stdio: 'ignore' });
-        if (term === 'gnome-terminal') {
-          child = spawn(term, ['--', 'bash', '-c', `${fullCmd}; exec bash`],
-            { detached: true, stdio: 'ignore' });
-        } else {
-          child = spawn(term, ['-e', `bash -c "${fullCmd}; exec bash"`],
-            { detached: true, stdio: 'ignore' });
-        }
-        launched = true;
-        break;
-      } catch (_) {}
+      let child;
+      if (process.platform === 'darwin') {
+        // Write to a temporary script file to run in a new Terminal window safely
+        const os = require('os');
+        const tmpScript = path.join(os.tmpdir(), `r4l-${Date.now()}.sh`);
+        fs.writeFileSync(tmpScript, `#!/bin/bash\n${cmd}`);
+        fs.chmodSync(tmpScript, '755');
+        child = spawn('open', ['-a', 'Terminal', tmpScript], { detached: true, stdio: 'ignore' });
+      } else {
+        child = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' });
+      }
+
+      // PREVENT CRASH: Handle asynchronous spawn errors
+      child.on('error', (err) => {
+        console.error('[AppRunner] Terminal spawn error:', err);
+      });
+
+      child.unref();
+      runningApps.set(repoName, { port, process: child });
     }
-    if (!launched) {
-      child = spawn('bash', ['-c', `${fullCmd} &`], { detached: true, stdio: 'ignore' });
-    }
+  } catch (launchErr) {
+    // Catch any synchronous errors during execution formulation
+    console.error('[AppRunner] Critical error launching app:', launchErr);
   }
 
-  if (child) child.unref();
-  runningApps.set(repoName, { port, process: child });
-
-  // Wait for server to start (longer for Go/Python which need compile/install)
-  const warmup = runInfo.type === 'nodejs' ? 2500 : 4000;
-  await new Promise(r => setTimeout(r, warmup));
+  // Wait a moment for the server to start
+  await new Promise(r => setTimeout(r, 2000));
 
   const localUrl = `http://localhost:${port}`;
   console.log(`[AppRunner] ${repoName} should be running at ${localUrl}`);
