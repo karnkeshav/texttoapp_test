@@ -26,7 +26,16 @@ const runningApps = new Map();
 
 // ── Backend type detectors ────────────────────────────────────────
 
-/** Detect whether this is a Node.js app by looking for package.json */
+/** Returns true for any app that needs the local runner (Node, Go, or Python). */
+function needsLocalRunner(files) {
+  return files.some(f =>
+    f.path === 'package.json' || f.path.endsWith('/package.json') ||
+    f.path === 'go.mod'       || f.path.endsWith('.go')           ||
+    f.path === 'requirements.txt' || f.path.endsWith('.py')
+  );
+}
+
+/** Kept for internal use — narrower check used by getRunInfo priority. */
 function isNodeApp(files) {
   return files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
 }
@@ -147,12 +156,37 @@ async function runApp(repoName, files) {
 
   let child;
   if (process.platform === 'win32') {
-    const cmd = runInfo.type === 'nodejs'
-      ? `npm install --prefer-offline 2>&1 | Out-Null; $env:PORT='${port}'; node server.js`
-      : runInfo.cmd;
-    child = spawn('powershell.exe', ['-NoExit', '-Command',
-      `Set-Location -Path '${appDir}'; Write-Host "Starting ${repoName}..." -ForegroundColor Green; ${cmd}`
-    ], { detached: true, stdio: 'ignore', shell: false });
+    const hasNode = files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
+    const hasGo   = files.some(f => f.path === 'go.mod' || f.path.endsWith('.go'));
+
+    const ps1 = [
+      `Set-Location -Path '${appDir}'`,
+      `$env:PORT = '${port}'`
+    ];
+
+    if (hasNode) {
+      ps1.push(`Write-Host "[Ready4Launch] Installing Node dependencies..." -ForegroundColor Cyan`);
+      ps1.push(`npm install --prefer-offline 2>&1 | Out-Null`);
+    }
+    if (hasGo) {
+      ps1.push(`Write-Host "[Ready4Launch] Tending Go modules..." -ForegroundColor Cyan`);
+      ps1.push(`if (Test-Path go.mod) { go mod tidy 2>&1 | Out-Null }`);
+    }
+
+    ps1.push(`Write-Host "[Ready4Launch] Starting servers..." -ForegroundColor Green`);
+
+    if (hasNode && hasGo) {
+      ps1.push(`Start-Process -NoNewWindow npm -ArgumentList "start"`);
+      ps1.push(`go run .`);
+    } else if (hasGo) {
+      ps1.push(`go run .`);
+    } else {
+      ps1.push(`npm start >$null 2>&1 || node server.js`);
+    }
+
+    child = spawn('powershell.exe', ['-NoExit', '-Command', ps1.join('; ')], {
+      detached: true, stdio: 'ignore', shell: false,
+    });
 
   } else if (process.platform === 'darwin') {
     // macOS: write a launch script and open Terminal
@@ -197,4 +231,4 @@ async function runApp(repoName, files) {
   return localUrl;
 }
 
-module.exports = { runApp, isNodeApp, isBackendApp, getRunInfo };
+module.exports = { runApp, needsLocalRunner, isBackendApp, getRunInfo };

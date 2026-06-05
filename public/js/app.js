@@ -1175,8 +1175,8 @@ async function deployToGitHub(fileId, btn) {
          (stack?.backend && stack.backend !== 'none' && stack.backend !== undefined));
       // Effective stack: server response is more reliable than window globals
       const effectiveStack = data.stack || stack || { frontend: 'html', backend: 'none' };
-      // Keep legacy alias used in the Node.js auto-launch branch below
-      const isNodeApp    = isAutoLaunched;
+      // Local app: either auto-launched or has a local URL
+      const isLocalApp   = !!data.localUrl;
       const editSuccess  = isEditMode;
 
       if (editSuccess) {
@@ -1201,8 +1201,9 @@ async function deployToGitHub(fileId, btn) {
         return;
       }
 
-      if (isNodeApp) {
+      if (isLocalApp) {
         // ── Auto-launched backend app ─────────────────────────────
+        const apkPromptId = `apk-prompt-${Date.now()}`;
         card.innerHTML = `
           <div class="push-success">
             <h4>🚀 App launched locally!</h4>
@@ -1220,9 +1221,32 @@ async function deployToGitHub(fileId, btn) {
               📁 <strong>Repository:</strong>
               <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
             </p>
-            <p style="font-size:12px;color:var(--text-3);margin-bottom:0;">
+            <p style="font-size:12px;color:var(--text-3);margin-bottom:16px;">
               💡 Also saved locally at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
             </p>
+
+            <!-- Android APK prompt (Now visible for local apps) -->
+            <div id="${apkPromptId}" style="border-top:1px solid var(--border);padding-top:14px;margin-top:4px;">
+              <p style="font-size:13px;font-weight:600;margin-bottom:6px;">📱 Want this as an Android app?</p>
+              <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">
+                I can wrap your app in a native Android WebView and generate a project you can
+                build into an APK — installable on any Android device.
+              </p>
+              <div style="display:flex;gap:8px;">
+                <button onclick="buildAndroidApk('${apkPromptId}','${data.repoName}','${encodeURIComponent(data.repoName)}','${encodeURIComponent(data.localUrl)}')"
+                  style="background:linear-gradient(135deg,#22c55e,#16a34a);color:#fff;border:none;
+                         border-radius:8px;padding:8px 18px;font-size:12px;font-weight:700;
+                         cursor:pointer;font-family:var(--font);">
+                  Yes, create Android APK →
+                </button>
+                <button onclick="document.getElementById('${apkPromptId}').remove()"
+                  style="background:none;border:1px solid var(--border);color:var(--text-3);
+                         border-radius:8px;padding:8px 14px;font-size:12px;cursor:pointer;
+                         font-family:var(--font);">
+                  No thanks
+                </button>
+              </div>
+            </div>
           </div>
         `;
 

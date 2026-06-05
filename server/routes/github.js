@@ -1,7 +1,7 @@
 const express = require('express');
 const { listRepos, createRepo, pushFiles, enablePages, getFileContent } = require('../services/githubService');
 const { auditAndHeal } = require('../services/codeQuality');
-const { runApp, isNodeApp, isBackendApp, getRunInfo } = require('../services/appRunner');
+const { runApp, needsLocalRunner, isBackendApp, getRunInfo } = require('../services/appRunner');
 const { getRunCommand } = require('../services/stackAdvisor');
 
 const router = express.Router();
