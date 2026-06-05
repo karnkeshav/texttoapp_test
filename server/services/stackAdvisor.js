@@ -60,22 +60,27 @@ function getStackLabel(stack) {
  * - manual: needs developer setup (Python, Java etc.)
  */
 function getDeploymentMode(stack) {
-  const { frontend, backend, type } = stack;
-
-  // Any real backend → local or manual
+  const { frontend, backend } = stack;
   if (backend && backend !== 'none') {
     if (backend === 'nodejs') return 'local';
-    return 'manual'; // Python, Java, Go etc. need local dev environment
+    if (['go', 'python', 'ruby', 'php', 'rust'].includes(backend)) return 'local';
+    return 'manual';
   }
-
-  // SSR frameworks → local (need npm run dev)
   if (frontend === 'nextjs' || frontend === 'nuxtjs') return 'local';
-
-  // Angular/Svelte → need build step → local
   if (frontend === 'angular' || frontend === 'svelte') return 'local';
-
-  // React/Vue CDN, static HTML/CSS, PWA → GitHub Pages
   return 'github-pages';
+}
+
+function getRunCommand(stack) {
+  switch (stack.backend) {
+    case 'nodejs':  return 'npm install && npm start';
+    case 'go':      return 'go run .';
+    case 'python':  return 'pip install -r requirements.txt && python main.py';
+    case 'ruby':    return 'bundle install && ruby app.rb';
+    case 'php':     return 'php -S localhost:8080';
+    case 'rust':    return 'cargo run';
+    default:        return null;
+  }
 }
 
 // ── Tailored question sets ────────────────────────────────────────
@@ -391,6 +396,7 @@ module.exports = {
   getStackLabel,
   getStackQuestions,
   getDeploymentMode,
+  getRunCommand,
   buildStackContext,
   runDryCheck,
   FRONTEND_LABELS,

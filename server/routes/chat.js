@@ -564,12 +564,16 @@ router.post('/chat', requireAuth, async (req, res) => {
   const isImageAttachment = hasAttachment && attachment.mimeType.startsWith('image/');
 
   // Reset full session on new conversation (but preserve edit mode if continuing)
-  const isRestoringEditMode = isEditMode && req.session.editMode &&
-    req.session.editMode.owner === editOwner &&
-    req.session.editMode.repo === editRepo &&
-    req.session.chatPhase === 'editing'; // Only if already in editing phase
+  const isInActiveEditSession = isEditMode &&
+    req.session.editMode?.owner === editOwner &&
+    req.session.editMode?.repo === editRepo &&
+    (
+      (Array.isArray(req.session.chatHistory) && req.session.chatHistory.length > 0) ||
+      ['edit_choice', 'editing'].includes(req.session.chatPhase)
+    );
+  const isRestoringEditMode = isInActiveEditSession && req.session.chatPhase === 'editing';
 
-  if (newConversation || !req.session.chatHistory) {
+  if ((newConversation || !req.session.chatHistory) && !isInActiveEditSession) {
     req.session.chatHistory      = [];
     req.session.planNotes        = '';
     req.session.buildMode        = null;   // 'prototype' | 'complete'
@@ -594,7 +598,9 @@ router.post('/chat', requireAuth, async (req, res) => {
   }
 
   const history = req.session.chatHistory;
-  const isFirstMessage = history.length === 0;
+  // isFirstMessage drives "show the choice screen" logic — must stay false when
+  // we're mid-edit-session even if chatHistory is empty (e.g. after a GitHub fetch error).
+  const isFirstMessage = history.length === 0 && !isInActiveEditSession;
   const primaryKey = process.env.GEMINI_API_KEY;
 
   if (!primaryKey) {
@@ -973,12 +979,57 @@ router.post('/chat', requireAuth, async (req, res) => {
       if (req.session.chatPhase === 'edit_choice' && !isFirstMessage) {
         const choice = trimmedMessage.toLowerCase().trim();
 
-        // Choice 1: Change the stack → reset to stack selection
-        if (choice.includes('change') || choice.match(/^1|stack/i)) {
+        const isExplicitStackChange =
+          /^1\b/.test(choice) ||
+          /\bchange\s+(the\s+)?stack\b/i.test(choice) ||
+          /\bswitch\s+stack\b/i.test(choice) ||
+          /\bnew\s+stack\b/i.test(choice);
+        const isExplicitModify =
+          /^2\b/.test(choice) ||
+          /\bmodif(y|ication)\b/i.test(choice) ||
+          /\bsame\s+stack\b/i.test(choice) ||
+          /\b(fix|edit|update|improve|add|enhance)\b/.test(choice);
+
+        // ── CONVERSATIONAL FALLTHROUGH — answer naturally, don't re-show buttons ──
+        if (!isExplicitStackChange && !isExplicitModify) {
           req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
-          req.session.chatPhase = 'stack_selection';
+          const hasCode = !!req.session.currentCode;
+          const convPrompt = hasCode
+            ? `You are reviewing the app in ${editOwner}/${editRepo}.\n\n` +
+              `CURRENT CODE EXCERPT:\n\`\`\`html\n${req.session.currentCode.slice(0, 6000)}\n\`\`\`\n\n` +
+              `User: ${trimmedMessage}\n\n` +
+              `Answer helpfully and concisely. Do NOT output REPO_NAME or new HTML. ` +
+              `If the user wants to change the app, remind them: reply **1** to change stack, **2** to modify.`
+            : `The user is editing ${editOwner}/${editRepo} and says: "${trimmedMessage}"\n\n` +
+              `Respond helpfully. Remind them: **1** = change stack, **2** = modify existing app.`;
+          sendEvent('status', { message: 'Thinking…' });
+          let convResponse = '';
+          await pooledStream({
+            contents:          [{ role: 'user', parts: [{ text: convPrompt }] }],
+            config:            { temperature: 0.5, maxOutputTokens: 1024 },
+            apiKey,
+            tier:              'chat',
+            systemInstruction: SYS_CHAT,
+            onChunk: (t) => sendEvent('chunk', { text: t }),
+            onDone:  (t) => { convResponse = t; },
+          });
+          req.session.chatHistory.push({ role: 'assistant', content: convResponse });
+          sendEvent('done', { text: convResponse });
+          return res.end();
+        }
+
+        // Choice 1: Change the stack → save original repo, reset to stack selection
+        if (isExplicitStackChange) {
+          req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
+          req.session.chatPhase    = 'stack_selection';
           req.session.selectedStack = null;
-          req.session.editMode = null; // Clear edit context, reset to build
+          // Bug 3 Fix A — save repo before clearing editMode
+          req.session.originalEditRepo = {
+            owner:  editOwner,
+            repo:   editRepo,
+            branch: req.session.editMode?.branch || editBranch || 'main',
+          };
+          req.session.editMode = null;
 
           const resetMsg = `Got it! Let's rebuild with a new stack. Choose your new tech stack:`;
           req.session.chatHistory.push({ role: 'assistant', content: resetMsg });
@@ -988,8 +1039,8 @@ router.post('/chat', requireAuth, async (req, res) => {
         }
 
         // Choice 2: Modify within same stack → ask what changes
-        if (choice.includes('modif') || choice.match(/^2|same/i)) {
-          req.session.chatPhase = 'editing'; // Move to edit phase
+        if (isExplicitModify) {
+          req.session.chatPhase = 'editing';
           req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
 
           const askMsg = `Perfect! What would you like me to **fix, enhance, or add** to your app?`;
@@ -999,9 +1050,9 @@ router.post('/chat', requireAuth, async (req, res) => {
           return res.end();
         }
 
-        // Invalid choice → re-show
-        sendEvent('chunk', { text: 'Please reply with 1 (change stack) or 2 (modify app).' });
-        sendEvent('done',  { text: 'Please reply with 1 (change stack) or 2 (modify app).', showEditChoice: true });
+        // Fallback (shouldn't reach here)
+        sendEvent('chunk', { text: 'Please reply with **1** to change the tech stack, or **2** to modify the existing app.' });
+        sendEvent('done',  { text: 'Please reply with **1** to change the tech stack, or **2** to modify the existing app.', showEditChoice: true });
         return res.end();
       }
 
@@ -1087,13 +1138,33 @@ router.post('/chat', requireAuth, async (req, res) => {
         console.warn('[QualityPass] Edit mode non-fatal:', qErr.message);
       }
 
-      // Update cached code so the next edit turn builds on this version
-      const updatedHtmlMatch = finalEdit.match(/```html\s*([\s\S]*?)```/i);
-      if (updatedHtmlMatch) req.session.currentCode = updatedHtmlMatch[1].trim();
+      // Bug 4 — update cached code and build full multi-file payload
+      const allEditedFiles = extractFilesFromText(finalEdit);
+      if (allEditedFiles.length > 0) {
+        const mainHtml = allEditedFiles.find(
+          f => f.path === 'index.html' || f.path === 'public/index.html' ||
+               f.path.endsWith('/index.html') || f.path.endsWith('.html')
+        );
+        req.session.currentCode = (mainHtml || allEditedFiles[0]).content;
+      } else {
+        const htmlMatch = finalEdit.match(/```html\s*([\s\S]*?)```/i);
+        if (htmlMatch) req.session.currentCode = htmlMatch[1].trim();
+      }
 
       req.session.chatHistory.push({ role: 'assistant', content: finalEdit });
       const branch = req.session.editMode?.branch || editBranch;
-      sendEvent('done', { text: finalEdit, editMode: true, editOwner, editRepo, editBranch: branch });
+      const editDonePayload = {
+        text: finalEdit, editMode: true, editOwner, editRepo, editBranch: branch,
+      };
+      if (allEditedFiles.length > 1) editDonePayload.generatedFiles = allEditedFiles;
+      const activeStack = req.session.selectedStack || req.session.detectedStack;
+      if (activeStack) {
+        const { getDeploymentMode, getRunCommand } = require('../services/stackAdvisor');
+        editDonePayload.deployMode = getDeploymentMode(activeStack);
+        const rc = getRunCommand(activeStack);
+        if (rc) editDonePayload.runCommand = rc;
+      }
+      sendEvent('done', editDonePayload);
       res.end();
       return;
     }
@@ -1593,6 +1664,12 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
         if (dryResult) {
           donePayload.dryRun = dryResult;
           console.log(`[DryRun] Final result: ${dryResult.summary}`);
+        }
+        // Bug 3 Fix B — carry original repo when user changed stack mid-edit
+        if (req.session.originalEditRepo) {
+          donePayload.isStackRebuild = true;
+          donePayload.targetRepo     = req.session.originalEditRepo;
+          req.session.originalEditRepo = null;
         }
         // Include deployment mode so frontend shows correct CTA
         // Use selected stack if available, otherwise fall back to detected stack
