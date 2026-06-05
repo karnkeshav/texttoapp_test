@@ -8,6 +8,8 @@ let _welcomeMode = null;
 const pendingFiles = new Map(); // fileId → { repoName, files }
 let fileIdCounter = 0;
 let _userAuthenticated = false; // set by loadUser(); controls welcome card visibility
+let _githubLogin = null;         // set by loadUser(); owner for Run Locally
+const runLocalState = new Map(); // rlId → { owner, repo, stack }
 
 // ── Deploy mode — always GitHub Pages ────────────────────────────
 // All deployment goes through GitHub Pages. Cloudflare has been removed.
@@ -127,6 +129,7 @@ async function loadUser() {
     }
 
     const { login, name, avatarUrl } = data.user;
+    _githubLogin = login;
     const hasGitHub = !!data.hasGitHub;
     const hasGoogle = !!data.hasGoogle;
 
@@ -1061,7 +1064,7 @@ function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
 
   const fileId = `fid-${++fileIdCounter}`;
   const isEditMode = editContext && editContext.editMode;
-  pendingFiles.set(fileId, { repoName, files, editContext });
+  pendingFiles.set(fileId, { repoName, files, editContext, stack: { frontend: window._stackFrontend || 'html', backend: window._stackBackend || 'none' } });
 
   const container = document.getElementById('chatMessages');
   const div = document.createElement('div');
@@ -1120,7 +1123,7 @@ async function deployToGitHub(fileId, btn) {
 
   btn.disabled = true;
 
-  const { repoName, files, editContext } = pending;
+  const { repoName, files, editContext, stack } = pending;
   const isEditMode = editContext && editContext.editMode;
 
   btn.innerHTML = `<span style="opacity:0.7">${isEditMode ? 'Pushing changes…' : 'Creating repo &amp; deploying…'}</span>`;
@@ -1166,8 +1169,15 @@ async function deployToGitHub(fileId, btn) {
     if (data.success) {
       clearPendingBuild(); // successfully deployed — no need to resume this build later
 
-      const isNodeApp = !!data.localUrl;
-      const editSuccess = isEditMode;
+      const isAutoLaunched    = !!data.localUrl;                   // server started the app for us
+      const isBackendNoLaunch = !isAutoLaunched &&                 // backend but auto-launch failed/skipped
+        (data.isBackend || !!data.runCommand ||
+         (stack?.backend && stack.backend !== 'none' && stack.backend !== undefined));
+      // Effective stack: server response is more reliable than window globals
+      const effectiveStack = data.stack || stack || { frontend: 'html', backend: 'none' };
+      // Keep legacy alias used in the Node.js auto-launch branch below
+      const isNodeApp    = isAutoLaunched;
+      const editSuccess  = isEditMode;
 
       if (editSuccess) {
         // ── Edit success: show updated repo link ──────────────────
@@ -1192,12 +1202,12 @@ async function deployToGitHub(fileId, btn) {
       }
 
       if (isNodeApp) {
-        // ── Node.js / full-stack app ──────────────────────────────
+        // ── Auto-launched backend app ─────────────────────────────
         card.innerHTML = `
           <div class="push-success">
             <h4>🚀 App launched locally!</h4>
             <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
-              Your Node.js app has been saved, dependencies installed, and the server
+              Your app has been saved, dependencies installed, and the server
               started in a new terminal window.
             </p>
             <p style="margin-bottom:8px;">
@@ -1207,17 +1217,76 @@ async function deployToGitHub(fileId, btn) {
               &nbsp;<span style="font-size:12px;color:var(--text-3);">(open in your browser)</span>
             </p>
             <p style="margin-bottom:8px;">
-              📁 <strong>Source code:</strong>
+              📁 <strong>Repository:</strong>
               <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
             </p>
             <p style="font-size:12px;color:var(--text-3);margin-bottom:0;">
-              💡 The app is also saved at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
+              💡 Also saved locally at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
             </p>
           </div>
         `;
+
+      } else if (isBackendNoLaunch) {
+        // ── Backend app — code on GitHub, Run Locally via PowerShell ─
+        const rlId  = `rl-${Date.now()}`;
+        const owner = _githubLogin || data.repoUrl?.split('/')?.[3] || 'unknown';
+        runLocalState.set(rlId, { owner, repo: data.repoName, stack: effectiveStack });
+
+        const BACKEND_LABELS = { go: 'Go', python: 'Python', nodejs: 'Node.js',
+                                  ruby: 'Ruby', php: 'PHP', rust: 'Rust' };
+        const backendLabel = BACKEND_LABELS[effectiveStack.backend] || 'Backend';
+        const frontendLabel = effectiveStack.frontend && effectiveStack.frontend !== 'html'
+          ? `${effectiveStack.frontend.charAt(0).toUpperCase() + effectiveStack.frontend.slice(1)} + ` : '';
+
+        card.innerHTML = `
+          <div class="push-success">
+            <h4>🚀 ${frontendLabel}${backendLabel} app pushed to GitHub!</h4>
+            <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">
+              Your code is in the repository. Because this app needs a backend server,
+              click <strong>Run Locally</strong> to clone it, install dependencies,
+              and start both servers automatically.
+            </p>
+            <p style="margin-bottom:16px;">
+              📁 <strong>Repository:</strong>
+              <a href="${data.repoUrl}" target="_blank" rel="noopener"
+                style="color:var(--purple-light);">${data.repoUrl}</a>
+            </p>
+
+            <!-- Run Locally — primary action -->
+            <div id="${rlId}">
+              <button onclick="runLocally('${rlId}')"
+                style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+                       border-radius:10px;padding:12px 24px;font-size:15px;font-weight:700;
+                       cursor:pointer;font-family:var(--font);
+                       display:inline-flex;align-items:center;gap:8px;margin-bottom:12px;">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                ▶ Run Locally
+              </button>
+              ${data.runCommand ? `
+              <p style="font-size:12px;color:var(--text-3);margin:0;">
+                Or run manually in the repo folder:
+                <code style="display:inline-block;margin-top:4px;background:var(--surface);
+                  border:1px solid var(--border);border-radius:6px;padding:4px 8px;
+                  font-size:11px;color:var(--text-2);">${escapeHtml(data.runCommand)}</code>
+              </p>` : ''}
+            </div>
+          </div>
+        `;
+
       } else {
         // ── Static / GitHub Pages app ─────────────────────────────
         const apkPromptId = `apk-prompt-${Date.now()}`;
+        const rlId = `rl-${Date.now()}`;
+        const shouldRunLocally = effectiveStack.frontend && effectiveStack.frontend !== 'html';
+        if (shouldRunLocally) {
+          runLocalState.set(rlId, {
+            owner: _githubLogin || data.repoUrl?.split('/')?.[3] || 'unknown',
+            repo:  data.repoName,
+            stack: effectiveStack,
+          });
+        }
         card.innerHTML = `
           <div class="push-success">
             <h4>🎉 Deployed to GitHub Pages!</h4>
@@ -1259,6 +1328,28 @@ async function deployToGitHub(fileId, btn) {
             </div>
           </div>
         `;
+
+        // Run Locally section — appended after Android APK prompt for non-HTML stacks
+        if (shouldRunLocally) {
+          const pushSuccess = card.querySelector('.push-success');
+          if (pushSuccess) {
+            const rlDiv = document.createElement('div');
+            rlDiv.id = rlId;
+            rlDiv.style.cssText = 'border-top:1px solid var(--border);padding-top:14px;margin-top:4px;';
+            rlDiv.innerHTML = `
+              <p style="font-size:13px;font-weight:600;margin-bottom:6px;">💻 Run this app locally?</p>
+              <p style="font-size:12px;color:var(--text-3);margin-bottom:10px;">
+                Clone the repo, install dependencies, and start the dev servers on your machine — no manual setup needed.
+              </p>
+              <button onclick="runLocally('${rlId}')"
+                style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+                       border-radius:8px;padding:8px 18px;font-size:12px;font-weight:700;
+                       cursor:pointer;font-family:var(--font);">
+                ▶ Run Locally
+              </button>`;
+            pushSuccess.appendChild(rlDiv);
+          }
+        }
       }
     } else {
       btn.disabled = false;
@@ -2039,5 +2130,132 @@ function renderEditChoice(aiMsgId) {
   `;
 
   bubble.appendChild(card);
+  scrollToBottom();
+}
+
+// ── Run Locally ───────────────────────────────────────────────────
+
+async function runLocally(rlId) {
+  const state = runLocalState.get(rlId);
+  if (!state) return;
+
+  const container = document.getElementById(rlId);
+  if (!container) return;
+
+  const { owner, repo, stack } = state;
+
+  container.innerHTML = `
+    <p style="font-size:13px;font-weight:600;margin-bottom:8px;">💻 Setting up local environment…</p>
+    <div id="${rlId}-log" style="background:var(--surface);border:1px solid var(--border);border-radius:8px;
+      padding:10px 12px;font-size:11px;font-family:monospace;color:var(--text-2);
+      max-height:160px;overflow-y:auto;margin-bottom:10px;line-height:1.7;">
+      Starting…
+    </div>
+    <button onclick="stopLocalRun('${rlId}')"
+      style="background:none;border:1px solid var(--border);color:var(--text-3);
+             border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;font-family:var(--font);">
+      ■ Stop
+    </button>`;
+
+  const logEl = document.getElementById(`${rlId}-log`);
+  const appendLog = (msg) => {
+    if (!logEl) return;
+    const line = document.createElement('div');
+    line.textContent = msg;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+  logEl.innerHTML = '';
+
+  try {
+    const res = await fetch('/api/run-local', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ owner, repo, stack }),
+    });
+
+    if (!res.ok) {
+      let errMsg = 'Failed to start';
+      try { const e = await res.json(); errMsg = e.error || errMsg; } catch (_) {}
+      container.innerHTML = `
+        <p style="color:#f87171;font-size:13px;margin-bottom:8px;">⚠️ ${escapeHtml(errMsg)}</p>
+        <button onclick="runLocally('${rlId}')"
+          style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+                 border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;
+                 cursor:pointer;font-family:var(--font);">↺ Retry</button>`;
+      return;
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        try {
+          const ev = JSON.parse(line.slice(5).trim());
+          if (ev.type === 'progress') {
+            appendLog(ev.message);
+          } else if (ev.type === 'ready') {
+            const safeUrl = escapeHtml(ev.url);
+            container.innerHTML = `
+              <p style="font-size:13px;font-weight:700;color:#4ade80;margin-bottom:10px;">✅ App running locally!</p>
+              <a href="${ev.url}" target="_blank" rel="noopener"
+                style="display:inline-flex;align-items:center;gap:8px;
+                       background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;
+                       text-decoration:none;border-radius:8px;padding:9px 18px;
+                       font-size:13px;font-weight:700;font-family:var(--font);margin-bottom:10px;">
+                🌐 Open ${safeUrl} →
+              </a>
+              <br/>
+              <button onclick="stopLocalRun('${rlId}')"
+                style="background:none;border:1px solid var(--border);color:var(--text-3);
+                       border-radius:8px;padding:6px 14px;font-size:12px;cursor:pointer;
+                       font-family:var(--font);margin-top:8px;">
+                ■ Stop local servers
+              </button>`;
+            scrollToBottom();
+            return;
+          } else if (ev.type === 'error') {
+            container.innerHTML = `
+              <p style="color:#f87171;font-size:13px;margin-bottom:8px;">⚠️ ${escapeHtml(ev.message)}</p>
+              <button onclick="runLocally('${rlId}')"
+                style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+                       border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;
+                       cursor:pointer;font-family:var(--font);">↺ Retry</button>`;
+            scrollToBottom();
+            return;
+          }
+        } catch (_) {}
+      }
+    }
+  } catch (err) {
+    container.innerHTML = `
+      <p style="color:#f87171;font-size:13px;margin-bottom:8px;">⚠️ ${escapeHtml(err.message)}</p>
+      <button onclick="runLocally('${rlId}')"
+        style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+               border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;
+               cursor:pointer;font-family:var(--font);">↺ Retry</button>`;
+  }
+  scrollToBottom();
+}
+
+async function stopLocalRun(rlId) {
+  try { await fetch('/api/run-local/stop', { method: 'POST' }); } catch (_) {}
+  const container = document.getElementById(rlId);
+  if (!container) return;
+  container.innerHTML = `
+    <p style="font-size:12px;color:var(--text-3);margin-bottom:8px;">Local servers stopped.</p>
+    <button onclick="runLocally('${rlId}')"
+      style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;
+             border-radius:8px;padding:6px 14px;font-size:12px;font-weight:700;
+             cursor:pointer;font-family:var(--font);">▶ Run Again</button>`;
   scrollToBottom();
 }

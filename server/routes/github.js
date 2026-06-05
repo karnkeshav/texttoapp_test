@@ -2,6 +2,7 @@ const express = require('express');
 const { listRepos, createRepo, pushFiles, enablePages, getFileContent } = require('../services/githubService');
 const { auditAndHeal } = require('../services/codeQuality');
 const { runApp, isNodeApp, isBackendApp, getRunInfo } = require('../services/appRunner');
+const { getRunCommand } = require('../services/stackAdvisor');
 
 const router = express.Router();
 
@@ -178,24 +179,34 @@ router.post('/deploy', requireAuth, async (req, res) => {
       'Initial app — built with Ready4Launch'
     );
 
-    // 5. Enable GitHub Pages ONLY for purely static apps (no backend server)
+    // 5. Determine backend status from BOTH file content AND session stack.
+    //    The AI often generates only HTML+CDN for a React+Go app, so file detection
+    //    alone can miss the backend — session.selectedStack is the authoritative source.
+    const sessionStack = req.session.selectedStack || req.session.detectedStack || null;
+    const BACKEND_TYPES = ['nodejs', 'go', 'python', 'ruby', 'php', 'rust'];
+    const stackHasBackend = sessionStack?.backend &&
+      BACKEND_TYPES.includes(sessionStack.backend);
+    const isBackend = isBackendApp(auditedFiles) || !!stackHasBackend;
+
+    // Enable GitHub Pages ONLY for purely static apps (no backend server)
     let pagesUrl = null;
-    if (!isBackendApp(auditedFiles)) {
+    if (!isBackend) {
       pagesUrl = await enablePages(req.session.githubToken, owner, name);
     }
 
-    // 6. For ANY backend app — save locally and attempt to auto-launch
+    // 6. For ANY backend app — resolve run command and attempt auto-launch
     let localUrl   = null;
     let runCommand = null;
-    if (isBackendApp(auditedFiles)) {
-      const runInfo = getRunInfo(auditedFiles);
-      runCommand = runInfo?.cmd || null;
+    if (isBackend) {
+      // File-based detection first; fall back to stack-based run command
+      const runInfo  = getRunInfo(auditedFiles);
+      runCommand     = runInfo?.cmd || (sessionStack ? getRunCommand(sessionStack) : null);
       try {
         localUrl = await runApp(name, auditedFiles);
         console.log(`[Deploy] App launched at ${localUrl}`);
       } catch (runErr) {
         console.warn('[AppRunner] Failed to auto-launch:', runErr.message);
-        // Non-fatal — frontend will show run instructions instead
+        // Non-fatal — frontend will show Run Locally button instead
       }
     }
 
@@ -204,8 +215,10 @@ router.post('/deploy', requireAuth, async (req, res) => {
       repoUrl,
       pagesUrl,
       localUrl,
-      runCommand,   // e.g. "go run ." — frontend shows copy-paste card
-      repoName:   name,
+      runCommand,   // e.g. "go run ." — shown as fallback copy-paste command
+      isBackend,    // frontend uses this to show the right success card
+      stack:        sessionStack,   // lets frontend populate runLocally() correctly
+      repoName:     name,
     });
   } catch (err) {
     if (!res.headersSent) {
