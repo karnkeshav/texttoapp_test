@@ -14,9 +14,10 @@ const { execSync, spawn } = require('child_process');
 const path = require('path');
 const fs   = require('fs');
 const net  = require('net');
+const os   = require('os');
 
 // ── Paths ────────────────────────────────────────────────────────
-const APPS_ROOT = path.join(__dirname, '..', '..', 'generated-apps');
+const APPS_ROOT = path.join(os.tmpdir(), 'ready4launch-apps');
 
 // ── Running app registry ─────────────────────────────────────────
 // Maps repoName → { port, process }
@@ -214,7 +215,6 @@ async function runApp(repoName, files) {
       let child;
       if (process.platform === 'darwin') {
         // Write to a temporary script file to run in a new Terminal window safely
-        const os = require('os');
         const tmpScript = path.join(os.tmpdir(), `r4l-${Date.now()}.sh`);
         fs.writeFileSync(tmpScript, `#!/bin/bash\n${cmd}`);
         fs.chmodSync(tmpScript, '755');

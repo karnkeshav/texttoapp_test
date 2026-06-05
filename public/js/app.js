@@ -1222,7 +1222,7 @@ async function deployToGitHub(fileId, btn) {
               <a href="${data.repoUrl}" target="_blank" rel="noopener" style="color:var(--purple-light);">${data.repoUrl}</a>
             </p>
             <p style="font-size:12px;color:var(--text-3);margin-bottom:16px;">
-              💡 Also saved locally at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">generated-apps/${data.repoName}</code>
+              💡 Also saved locally at <code style="background:var(--surface);padding:1px 5px;border-radius:4px;">OS Temp Folder (ready4launch-apps/${data.repoName})</code>
             </p>
 
             <!-- Android APK prompt (Now visible for local apps) -->
