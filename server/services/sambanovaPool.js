@@ -258,8 +258,10 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
         if (text) { fullText += text; onChunk(text); }
       }
       if (isStreamTruncated(fullText)) {
-        console.warn(`[SambanovaPool] Cooldown slot ${i} (${slot.model}) truncated — trying next SambaNova slot`);
-        continue;
+        console.warn(`[SambanovaPool] Cooldown slot ${i} (${slot.model}) truncated — all slots exhausted`);
+        const err = new Error('All SambaNova pool stream slots exhausted (truncation detected)');
+        err.code = 'SAMBANOVA_POOL_EXHAUSTED';
+        throw err;
       }
       console.log(`[SambanovaPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

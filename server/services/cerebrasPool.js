@@ -245,8 +245,10 @@ async function cerebrasStream({ contents, config, apiKey, systemInstruction, onC
         if (text) { fullText += text; onChunk(text); }
       }
       if (isStreamTruncated(fullText)) {
-        console.warn(`[CerebrasPool] Cooldown slot ${i} (${slot.model}) truncated — trying next Cerebras slot`);
-        continue;
+        console.warn(`[CerebrasPool] Cooldown slot ${i} (${slot.model}) truncated — all slots exhausted`);
+        const err = new Error('All Cerebras pool stream slots exhausted (truncation detected)');
+        err.code = 'CEREBRAS_POOL_EXHAUSTED';
+        throw err;
       }
       console.log(`[CerebrasPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

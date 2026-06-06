@@ -261,8 +261,10 @@ async function groqStream({ contents, config, apiKey, systemInstruction, onChunk
         if (text) { fullText += text; onChunk(text); }
       }
       if (isStreamTruncated(fullText)) {
-        console.warn(`[GroqPool] Cooldown slot ${i} (${slot.model}) truncated — trying next Groq slot`);
-        continue;
+        console.warn(`[GroqPool] Cooldown slot ${i} (${slot.model}) truncated — all slots exhausted`);
+        const err = new Error('All Groq pool stream slots exhausted (truncation detected)');
+        err.code = 'GROQ_POOL_EXHAUSTED';
+        throw err;
       }
       console.log(`[GroqPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);
