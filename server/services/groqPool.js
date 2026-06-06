@@ -17,38 +17,38 @@ const { trackRequest, updateServerLimits } = require('./quotaTracker');
 
 // ── Pool configuration ────────────────────────────────────────────
 // Each model has its own independent quota — the key advantage of pooling.
-// RPD = requests per day (free tier limits)
+// All models: 131072 context window
 const POOL_CONFIG = [
 
   // ── BUILD TIER — high-quality 70B+ models ────────────────────────
   // llama-3.3-70b-versatile: RPD 1,000 RPM 30 TPM 6,000
-  { model: 'llama-3.3-70b-versatile',         mode: 'stream',   tier: 'build' },
-  { model: 'llama-3.3-70b-versatile',         mode: 'generate', tier: 'build' },
+  { model: 'llama-3.3-70b-versatile',                        mode: 'stream',   tier: 'build' },
+  { model: 'llama-3.3-70b-versatile',                        mode: 'generate', tier: 'build' },
 
-  // llama-4-scout: RPD 1,000 RPM 30 TPM 6,000
-  { model: 'llama-4-scout',                   mode: 'stream',   tier: 'build' },
-  { model: 'llama-4-scout',                   mode: 'generate', tier: 'build' },
+  // meta-llama/llama-4-scout-17b-16e-instruct: RPD 1,000 RPM 30 TPM 6,000
+  { model: 'meta-llama/llama-4-scout-17b-16e-instruct',      mode: 'stream',   tier: 'build' },
+  { model: 'meta-llama/llama-4-scout-17b-16e-instruct',      mode: 'generate', tier: 'build' },
 
-  // deepseek-r1: RPD 1,000 RPM 30 TPM 6,000
-  { model: 'deepseek-r1-distill-llama-70b',   mode: 'stream',   tier: 'build' },
-  { model: 'deepseek-r1-distill-llama-70b',   mode: 'generate', tier: 'build' },
+  // openai/gpt-oss-120b: RPD 1,000 RPM 30 TPM 6,000
+  { model: 'openai/gpt-oss-120b',                            mode: 'stream',   tier: 'build' },
+  { model: 'openai/gpt-oss-120b',                            mode: 'generate', tier: 'build' },
 
-  // qwen-qwq-32b: RPD 1,000 RPM 30 TPM 6,000
-  { model: 'qwen-qwq-32b',                    mode: 'stream',   tier: 'build' },
-  { model: 'qwen-qwq-32b',                    mode: 'generate', tier: 'build' },
+  // qwen/qwen3-32b: RPD 1,000 RPM 30 TPM 6,000
+  { model: 'qwen/qwen3-32b',                                 mode: 'stream',   tier: 'build' },
+  { model: 'qwen/qwen3-32b',                                 mode: 'generate', tier: 'build' },
+
+  // openai/gpt-oss-20b: RPD 1,000 RPM 30 TPM 6,000 (extra capacity)
+  { model: 'openai/gpt-oss-20b',                             mode: 'stream',   tier: 'build' },
+  { model: 'openai/gpt-oss-20b',                             mode: 'generate', tier: 'build' },
 
   // ── CHAT TIER — lighter models, higher quota ──────────────────────
   // llama-3.1-8b-instant: RPD 14,400 RPM 30 TPM 20,000
-  { model: 'llama-3.1-8b-instant',            mode: 'stream',   tier: 'chat' },
-  { model: 'llama-3.1-8b-instant',            mode: 'generate', tier: 'chat' },
+  { model: 'llama-3.1-8b-instant',                           mode: 'stream',   tier: 'chat' },
+  { model: 'llama-3.1-8b-instant',                           mode: 'generate', tier: 'chat' },
 
-  // gemma2-9b-it: RPD 14,400 RPM 30 TPM 15,000
-  { model: 'gemma2-9b-it',                    mode: 'stream',   tier: 'chat' },
-  { model: 'gemma2-9b-it',                    mode: 'generate', tier: 'chat' },
-
-  // mixtral-8x7b-32768: RPD 14,400 RPM 30 TPM 5,000
-  { model: 'mixtral-8x7b-32768',              mode: 'stream',   tier: 'chat' },
-  { model: 'mixtral-8x7b-32768',              mode: 'generate', tier: 'chat' },
+  // openai/gpt-oss-20b: RPD 1,000 RPM 30 TPM 6,000
+  { model: 'openai/gpt-oss-20b',                             mode: 'stream',   tier: 'chat' },
+  { model: 'openai/gpt-oss-20b',                             mode: 'generate', tier: 'chat' },
 ];
 
 const COOLDOWN_MS = 60_000; // 1 min cooldown after 429

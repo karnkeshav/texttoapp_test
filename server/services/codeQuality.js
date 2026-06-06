@@ -15,7 +15,19 @@
 'use strict';
 
 const vm = require('vm');
-const { pooledGenerate, pooledStream } = require('./geminiPool');
+const geminiPool = require('./geminiPool'); // not destructured — lets tests spy on individual fns
+
+const REPAIR_TIMEOUT_MS = 55_000; // abort repair if Gemini takes longer than this
+
+// Returns true when at least one build-tier stream slot is free right now.
+// Lets fullQualityPass skip the repair step instead of waiting 60 s for a cooling slot.
+function geminiStreamAvailable() {
+  try {
+    return geminiPool.poolStatus().some(s => s.mode === 'stream' && s.tier === 'build' && s.available);
+  } catch (_) {
+    return false;
+  }
+}
 
 // Self-closing tags that never have a closing counterpart
 const VOID_TAGS = new Set([
@@ -217,7 +229,7 @@ HTML FILE:
 ${code}`;
 
   // pooledGenerate tries all working SDK/model slots automatically
-  const text = await pooledGenerate({
+  const text = await geminiPool.pooledGenerate({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config:   { temperature: 0.1, maxOutputTokens: 8192 },
     apiKey,
@@ -325,7 +337,7 @@ Maximum 5 issues. Keep the entire response under 150 words.`;
 
   let result;
   try {
-    result = await pooledGenerate({
+    result = await geminiPool.pooledGenerate({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       config:   { temperature: 0.1, maxOutputTokens: 400 },
       apiKey,
@@ -388,7 +400,7 @@ Return ONLY the corrected complete HTML file — no markdown fences, no commenta
 
   let repairedHtml = '';
   try {
-    await pooledStream({
+    await geminiPool.pooledStream({
       contents:          [{ role: 'user', parts: [{ text: repairPrompt }] }],
       config:            { temperature: 0.2, maxOutputTokens: 32768 },
       apiKey,
@@ -443,9 +455,30 @@ async function fullQualityPass(generatedText, requirements, apiKey) {
 
   if (audit.passed || audit.issues.length === 0) return generatedText;
 
-  // Step 2 — semantic repair
+  // Step 2 — only attempt repair when a Gemini stream slot is actually free.
+  // If all slots are cooling the repair call would silently block for ~60 s before
+  // giving up anyway — skip it and return the original output immediately.
+  if (!geminiStreamAvailable()) {
+    console.warn('[SemanticRepair] No free Gemini stream slots — skipping repair to avoid blocking');
+    return generatedText;
+  }
+
   console.log('[SemanticRepair] Repairing…');
-  const repaired = await semanticRepair(generatedText, audit.issues, requirements, apiKey);
+
+  // Wrap repair + re-audit in a hard timeout so a slow/stuck Gemini call never
+  // leaves the response stream silent for longer than REPAIR_TIMEOUT_MS.
+  let repaired;
+  try {
+    repaired = await Promise.race([
+      semanticRepair(generatedText, audit.issues, requirements, apiKey),
+      new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('repair timeout')), REPAIR_TIMEOUT_MS)
+      ),
+    ]);
+  } catch (err) {
+    console.warn(`[SemanticRepair] Skipped — ${err.message}`);
+    return generatedText;
+  }
 
   // Step 3 — re-audit to confirm fix
   const reAudit = await semanticAudit(repaired, requirements, apiKey);

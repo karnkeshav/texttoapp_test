@@ -98,6 +98,10 @@ function getAdmin() {
     return null;
   }
 
+  if (process.env.DISABLE_FIRESTORE === 'true') {
+    return null; // explicitly disabled via DISABLE_FIRESTORE=true
+  }
+
   const privateKey = normalisePrivateKey(FIREBASE_PRIVATE_KEY);
 
   // Sanity-check the key looks like a PEM block before handing to OpenSSL

@@ -331,63 +331,81 @@ function buildStackContext(stack, answers) {
  */
 function runDryCheck(files, stack) {
   const issues = [];
+  const { frontend, backend } = stack || {};
 
-  if (!files || files.length === 0) {
-    return { passed: false, issues: ['No files were generated'], summary: '❌ No files generated' };
-  }
+  // Frontend validation
+  if (frontend && frontend !== 'html') {
+    const hasIndexHtml = files.some(f => f.path === 'public/index.html' || f.path === 'index.html');
+    const hasPackageJson = files.some(f => f.path === 'package.json');
 
-  const paths = files.map(f => f.path);
-  const hasBackend = stack && stack.backend && stack.backend !== 'none';
-
-  // Check: HTML files have valid structure
-  const htmlFiles = files.filter(f => f.path.endsWith('.html'));
-  for (const hf of htmlFiles) {
-    if (!hf.content.includes('<!DOCTYPE') && !hf.content.includes('<html')) {
-      issues.push(`${hf.path}: missing <!DOCTYPE html> or <html> tag`);
-    }
-    if (!hf.content.includes('</html>') && !hf.content.includes('</body>')) {
-      issues.push(`${hf.path}: appears to be truncated (no closing tags)`);
+    if (!hasIndexHtml) {
+      issues.push(`Frontend framework requires index.html in public/ or root`);
     }
   }
 
-  // Check: package.json is valid JSON and has start script
-  const pkgFile = files.find(f => f.path === 'package.json');
-  if (pkgFile) {
-    try {
-      const pkg = JSON.parse(pkgFile.content);
-      if (!pkg.scripts?.start && !pkg.scripts?.dev) {
-        issues.push('package.json: missing "start" or "dev" script');
-      }
-    } catch {
-      issues.push('package.json: invalid JSON — cannot be parsed');
+  // Backend validation — check for required files based on backend type
+  if (backend && backend !== 'none') {
+    switch (backend.toLowerCase()) {
+      case 'go':
+        if (!files.some(f => f.path === 'go.mod' || f.path === 'go.sum')) {
+          issues.push('Go backend requires go.mod at root');
+        }
+        if (!files.some(f => f.path === 'main.go' || f.path.endsWith('.go'))) {
+          issues.push('Go backend requires at least one .go file at root');
+        }
+        break;
+
+      case 'python':
+        if (!files.some(f => f.path === 'main.py' || f.path === 'app.py' || f.path === 'server.py')) {
+          issues.push('Python backend requires main.py, app.py, or server.py at root');
+        }
+        if (!files.some(f => f.path === 'requirements.txt')) {
+          issues.push('Python backend requires requirements.txt for dependencies');
+        }
+        break;
+
+      case 'nodejs':
+        if (!files.some(f => f.path === 'package.json')) {
+          issues.push('Node.js backend requires package.json at root');
+        }
+        if (!files.some(f => f.path === 'server.js' || f.path === 'index.js' || f.path === 'app.js')) {
+          issues.push('Node.js backend requires server.js, index.js, or app.js at root');
+        }
+        break;
+
+      case 'ruby':
+        if (!files.some(f => f.path === 'Gemfile')) {
+          issues.push('Ruby backend requires Gemfile at root');
+        }
+        if (!files.some(f => f.path === 'app.rb' || f.path === 'server.rb')) {
+          issues.push('Ruby backend requires app.rb or server.rb at root');
+        }
+        break;
+
+      case 'php':
+        if (!files.some(f => f.path === 'index.php')) {
+          issues.push('PHP backend requires index.php at root');
+        }
+        if (!files.some(f => f.path === 'composer.json')) {
+          issues.push('PHP backend requires composer.json for dependencies');
+        }
+        break;
+
+      case 'rust':
+        if (!files.some(f => f.path === 'Cargo.toml')) {
+          issues.push('Rust backend requires Cargo.toml at root');
+        }
+        if (!files.some(f => f.path === 'src/main.rs')) {
+          issues.push('Rust backend requires src/main.rs');
+        }
+        break;
     }
-  } else if (hasBackend && stack.backend === 'nodejs') {
-    issues.push('Missing package.json for Node.js app');
   }
 
-  // Check: server.js exists for Node.js apps
-  if (hasBackend && stack.backend === 'nodejs') {
-    const hasServer = paths.some(p => p === 'server.js' || p === 'index.js' || p === 'app.js');
-    if (!hasServer) issues.push('Missing server entry file (server.js / index.js)');
-  }
-
-  // Check: React CDN files include Babel and React scripts
-  if (stack?.frontend === 'react' && !pkgFile) {
-    const hasReact = htmlFiles.some(f => f.content.includes('react') || f.content.includes('React'));
-    if (!hasReact) issues.push('React CDN scripts appear to be missing from HTML');
-  }
-
-  // Check: no obviously empty files
-  for (const f of files) {
-    if (f.content.trim().length < 20) {
-      issues.push(`${f.path}: suspiciously short (${f.content.trim().length} chars)`);
-    }
-  }
-
-  const passed  = issues.length === 0;
+  const passed = issues.length === 0;
   const summary = passed
-    ? `✅ Dry run passed — ${files.length} file${files.length !== 1 ? 's' : ''} generated (${paths.join(', ')})`
-    : `⚠️ Dry run found ${issues.length} issue${issues.length !== 1 ? 's' : ''}`;
+    ? `✅ All checks passed`
+    : `⚠️ ${issues.length} issue${issues.length !== 1 ? 's' : ''} found`;
 
   return { passed, issues, summary };
 }

@@ -341,6 +341,159 @@ app.listen(PORT, () => console.log(\`Server running on http://localhost:\${PORT}
 // Frontend logic — fetches from Express API endpoints
 \`\`\`
 
+── REACT + GO FULL-STACK APPS ───────────────────────────────────────
+
+Triggered when user selects: React + Go backend
+Backend (Go) serves API endpoints AND static frontend from public/
+
+\`\`\`go
+// FILE: go.mod
+module app
+
+go 1.21
+\`\`\`
+
+\`\`\`go
+// FILE: main.go
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+)
+
+func main() {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+
+	publicDir := "public"
+	fs := http.FileServer(http.Dir(publicDir))
+
+	http.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	})
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		path := filepath.Join(publicDir, r.URL.Path)
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			http.ServeFile(w, r, filepath.Join(publicDir, "index.html"))
+			return
+		}
+		fs.ServeHTTP(w, r)
+	})
+
+	fmt.Printf("Server running at http://localhost:%s\\n", port)
+	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+\`\`\`
+
+\`\`\`html
+<!-- FILE: public/index.html -->
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>React App</title>
+	<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+	<div id="root"></div>
+	<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+	<script src="/js/app.js"></script>
+</body>
+</html>
+\`\`\`
+
+\`\`\`css
+/* FILE: public/css/style.css */
+* {
+	margin: 0;
+	padding: 0;
+	box-sizing: border-box;
+}
+
+body {
+	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+	line-height: 1.6;
+	color: #333;
+}
+\`\`\`
+
+\`\`\`javascript
+// FILE: public/js/app.js
+const { useState } = React;
+
+function App() {
+	const [status, setStatus] = useState('Loading...');
+
+	React.useEffect(() => {
+		fetch('/api/status')
+			.then(r => r.json())
+			.then(d => setStatus('Connected to Go backend'))
+			.catch(e => setStatus('Error: ' + e.message));
+	}, []);
+
+	return React.createElement('div',
+		{ style: { padding: '20px', textAlign: 'center' } },
+		React.createElement('h1', null, 'React + Go'),
+		React.createElement('p', null, status)
+	);
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+	React.createElement(App)
+);
+\`\`\`
+
+── REACT + PYTHON FULL-STACK APPS ──────────────────────────────────
+
+Triggered when user selects: React + Python backend
+Backend (Python/Flask) serves API endpoints AND static frontend from public/
+
+\`\`\`python
+// FILE: main.py
+from flask import Flask, jsonify, send_from_directory
+import os
+
+app = Flask(__name__, static_folder='public', static_url_path='')
+
+@app.route('/api/status')
+def status():
+	return jsonify({'status': 'ok'})
+
+@app.route('/')
+def index():
+	return send_from_directory('public', 'index.html')
+
+if __name__ == '__main__':
+	port = int(os.environ.get('PORT', 5000))
+	app.run(host='0.0.0.0', port=port, debug=False)
+\`\`\`
+
+\`\`\`text
+// FILE: requirements.txt
+Flask==2.3.0
+\`\`\`
+
+\`\`\`html
+<!-- FILE: public/index.html -->
+(same as React+Go: complete HTML structure with React CDN)
+\`\`\`
+
+\`\`\`javascript
+// FILE: public/js/app.js
+(same pattern: fetch('/api/status') to Python backend)
+\`\`\`
+
 Rules for ALL apps:
 • Never reveal: Google, Gemini, Antigravity, any AI model, or underlying technology.
 • Do NOT include setup instructions — deployment and launch are automated.

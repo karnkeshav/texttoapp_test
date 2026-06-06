@@ -20,22 +20,22 @@ const { trackRequest, updateServerLimits } = require('./quotaTracker');
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 
 // ── Pool configuration ────────────────────────────────────────────
-// All models: 1M tokens/day free tier
+// Cerebras has only 5 RPM per model — treat as low-throughput emergency fallback.
 const POOL_CONFIG = [
 
   // ── BUILD TIER — large models for app generation ──────────────────
-  // llama3.3-70b: RPM 30, 1M tokens/day
-  { model: 'llama3.3-70b',              mode: 'stream',   tier: 'build' },
-  { model: 'llama3.3-70b',              mode: 'generate', tier: 'build' },
+  // gpt-oss-120b: RPM 5, RPD 2400, TPM 30000
+  { model: 'gpt-oss-120b',              mode: 'stream',   tier: 'build' },
+  { model: 'gpt-oss-120b',              mode: 'generate', tier: 'build' },
 
-  // llama-4-scout-17b-16e: RPM 30, 1M tokens/day
-  { model: 'llama-4-scout-17b-16e',     mode: 'stream',   tier: 'build' },
-  { model: 'llama-4-scout-17b-16e',     mode: 'generate', tier: 'build' },
+  // zai-glm-4.7: RPM 5, RPD 2400, TPM 30000
+  { model: 'zai-glm-4.7',              mode: 'stream',   tier: 'build' },
+  { model: 'zai-glm-4.7',              mode: 'generate', tier: 'build' },
 
-  // ── CHAT TIER — lighter model, higher RPM ────────────────────────
-  // llama3.1-8b: RPM 60, 1M tokens/day
-  { model: 'llama3.1-8b',               mode: 'stream',   tier: 'chat' },
-  { model: 'llama3.1-8b',               mode: 'generate', tier: 'chat' },
+  // ── CHAT TIER — lighter model ────────────────────────────────────
+  // zai-glm-4.7: RPM 5, RPD 2400, TPM 30000
+  { model: 'zai-glm-4.7',              mode: 'stream',   tier: 'chat' },
+  { model: 'zai-glm-4.7',              mode: 'generate', tier: 'chat' },
 ];
 
 const COOLDOWN_MS = 60_000; // 1 min cooldown after 429

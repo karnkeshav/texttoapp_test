@@ -1,7 +1,10 @@
-const express      = require('express');
-const childProcess = require('child_process'); // not destructured — lets tests spy on .spawn
-const path         = require('path');
-const os           = require('os');
+'use strict';
+
+const express = require('express');
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const router = express.Router();
 
@@ -10,105 +13,202 @@ function requireAuth(req, res, next) {
   next();
 }
 
-function killPreviousProcesses(req) {
-  const pids = req.session.runLocalPids || [];
-  for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM'); } catch (_) {}
-  }
-  req.session.runLocalPids = [];
-}
+// POST /api/run-local
+// Input: { cloneUrl, repoName, stack }
+// Output: SSE stream with progress events
+router.post('/run-local', requireAuth, async (req, res) => {
+  const { cloneUrl, repoName, stack } = req.body;
 
-// POST /api/run-local — clone repo, install deps, start servers, stream progress via SSE
-router.post('/run-local', requireAuth, (req, res) => {
-  const { owner, repo, stack } = req.body;
-  if (!owner || !repo) return res.status(400).json({ error: 'owner and repo are required' });
-
-  const frontend = (stack?.frontend || 'html').toLowerCase();
-  const backend  = (stack?.backend  || 'none').toLowerCase();
-
-  if (frontend === 'html' && backend === 'none') {
-    return res.status(400).json({ error: 'Static HTML apps use GitHub Pages — no local run needed.' });
+  if (!cloneUrl || !repoName) {
+    return res.status(400).json({ error: 'cloneUrl and repoName are required' });
   }
 
-  killPreviousProcesses(req);
+  // Only allow full-stack apps
+  if (!stack?.backend || stack.backend === 'none' || !stack.frontend || stack.frontend === 'html') {
+    return res.status(400).json({ error: 'Run Locally only works for full-stack apps with backends' });
+  }
 
-  res.setHeader('Content-Type',  'text/event-stream');
+  // Set up SSE response
+  res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection',    'keep-alive');
-  res.flushHeaders();
+  res.setHeader('Connection', 'keep-alive');
 
-  const send = (type, data) => {
-    if (!res.writableEnded) res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
-  };
-
-  const token      = req.session.githubToken;
-  const repoUrl    = `https://${token}@github.com/${owner}/${repo}.git`;
-  const tempDir    = path.join(os.tmpdir(), `r4l-${owner}-${repo}-${Date.now()}`);
-  const scriptPath = path.join(__dirname, '..', '..', 'scripts', 'run-local.ps1');
-
-  send('progress', { message: 'Starting up…' });
-
-  const ps = childProcess.spawn('powershell.exe', [
-    '-NonInteractive',
-    '-ExecutionPolicy', 'Bypass',
-    '-File',     scriptPath,
-    '-RepoUrl',  repoUrl,
-    '-TempDir',  tempDir,
-    '-Frontend', frontend,
-    '-Backend',  backend,
-  ], { windowsHide: true });
-
-  req.session.runLocalPids = [ps.pid];
-  if (typeof req.session.save === 'function') {
-    req.session.save((err) => { if (err) console.warn('[RunLocal] session save:', err.message); });
+  function sendEvent(type, data) {
+    res.write(`data: ${JSON.stringify({ type, ...data })}\n\n`);
   }
 
-  let buf = '';
+  const appDir = path.join(os.homedir(), 'ready4launch-apps', repoName);
 
-  ps.stdout.on('data', (chunk) => {
-    buf += chunk.toString();
-    const lines = buf.split('\n');
-    buf = lines.pop();
-    for (const line of lines) {
-      const t = line.trim();
-      if (!t) continue;
-      if (t.startsWith('READY:')) {
-        send('ready', { url: t.slice(6).trim() });
-        if (!res.writableEnded) res.end();
-      } else if (t.startsWith('ERROR:')) {
-        send('error', { message: t.slice(6).trim() });
-        if (!res.writableEnded) res.end();
-      } else if (t.startsWith('PROGRESS:')) {
-        send('progress', { message: t.slice(9).trim() });
-      }
+  try {
+    // Ensure directory exists
+    if (!fs.existsSync(path.dirname(appDir))) {
+      fs.mkdirSync(path.dirname(appDir), { recursive: true });
     }
-  });
 
-  ps.stderr.on('data', (chunk) => {
-    const msg = chunk.toString().trim();
-    if (msg) send('progress', { message: msg });
-  });
+    sendEvent('progress', { message: 'Cloning repository...' });
 
-  ps.on('close', (code) => {
-    if (!res.writableEnded) {
-      send('error', { message: code !== 0 ? `Process exited with code ${code}` : 'Process ended unexpectedly.' });
-      res.end();
+    // Clone the repo
+    // Add GitHub token to URL if needed
+    const urlWithToken = cloneUrl.includes('github.com')
+      ? cloneUrl.replace('https://', `https://x-oauth-basic:${req.session.githubToken}@`)
+      : cloneUrl;
+
+    const cloneProcess = spawn('git', ['clone', '--depth', '1', urlWithToken, appDir], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      shell: process.platform === 'win32'
+    });
+
+    let cloneOutput = '';
+    let cloneError = '';
+
+    cloneProcess.stdout.on('data', (data) => {
+      cloneOutput += data.toString();
+    });
+
+    cloneProcess.stderr.on('data', (data) => {
+      cloneError += data.toString();
+    });
+
+    await new Promise((resolve, reject) => {
+      cloneProcess.on('close', (code) => {
+        if (code === 0) {
+          resolve();
+        } else {
+          reject(new Error(`Git clone failed: ${cloneError}`));
+        }
+      });
+      cloneProcess.on('error', reject);
+    });
+
+    sendEvent('progress', { message: 'Repository cloned. Starting server...' });
+
+    // Find a free port
+    const port = await findFreePort(stack.backend === 'go' ? 8080 : 3000);
+
+    // Save port to environment file
+    sendEvent('progress', { message: `Using port ${port}...` });
+
+    // Execute start.ps1 on Windows
+    if (process.platform === 'win32') {
+      const psCommand = `
+        ${'$'}env:PORT = ${port}
+        Set-Location -Path '${appDir}'
+        & .\\start.ps1 -NoOpen
+      `;
+
+      const psProcess = spawn('powershell.exe', [
+        '-NoExit',
+        '-ExecutionPolicy', 'Bypass',
+        '-Command', psCommand
+      ], {
+        cwd: appDir,
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: false
+      });
+
+      psProcess.on('error', (err) => {
+        console.error('[RunLocal] PowerShell spawn error:', err);
+        sendEvent('error', { message: `Failed to start server: ${err.message}` });
+      });
+
+      psProcess.unref();
+
+      // Store PID for cleanup
+      if (!req.session.runLocalPids) req.session.runLocalPids = [];
+      req.session.runLocalPids.push(psProcess.pid);
     }
-  });
 
-  req.on('close', () => { try { ps.kill(); } catch (_) {} });
+    // Wait for server to respond
+    sendEvent('progress', { message: 'Waiting for server to start...' });
+
+    const maxWait = 45000; // 45 seconds
+    const startTime = Date.now();
+    let serverReady = false;
+
+    while (Date.now() - startTime < maxWait) {
+      try {
+        const http = require('http');
+
+        const req2 = http.request(
+          {
+            hostname: 'localhost',
+            port: port,
+            path: '/',
+            timeout: 1000
+          },
+          (res2) => {
+            if (res2.statusCode < 500) {
+              serverReady = true;
+            }
+          }
+        );
+
+        req2.on('error', () => {
+          // Server not ready yet
+        });
+
+        req2.on('timeout', () => {
+          req2.destroy();
+        });
+
+        req2.end();
+
+        if (serverReady) break;
+      } catch (_) {}
+
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    if (!serverReady) {
+      sendEvent('error', { message: 'Server failed to respond after 45 seconds' });
+      return res.end();
+    }
+
+    const localUrl = `http://localhost:${port}`;
+    sendEvent('ready', { url: localUrl });
+    res.end();
+
+  } catch (err) {
+    console.error('[RunLocal] Error:', err.message);
+    sendEvent('error', { message: err.message });
+    res.end();
+  }
 });
 
-// POST /api/run-local/stop — kill previously started processes
+// POST /api/run-local/stop
+// Kills PIDs stored in session
 router.post('/run-local/stop', requireAuth, (req, res) => {
   const pids = req.session.runLocalPids || [];
   let killed = 0;
+
   for (const pid of pids) {
-    try { process.kill(pid, 'SIGTERM'); killed++; } catch (_) {}
+    try {
+      if (process.platform === 'win32') {
+        require('child_process').execSync(`taskkill /PID ${pid} /T /F`, { stdio: 'ignore' });
+      } else {
+        process.kill(pid, 'SIGTERM');
+      }
+      killed++;
+    } catch (_) {}
   }
+
   req.session.runLocalPids = [];
-  if (typeof req.session.save === 'function') req.session.save(() => {});
   res.json({ stopped: killed });
 });
+
+async function findFreePort(preferred) {
+  const net = require('net');
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(preferred, () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+    server.on('error', async () => {
+      resolve(await findFreePort(preferred + 1));
+    });
+  });
+}
 
 module.exports = router;

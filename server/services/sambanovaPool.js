@@ -21,29 +21,34 @@ const { trackRequest, updateServerLimits } = require('./quotaTracker');
 const SAMBANOVA_BASE_URL = 'https://api.sambanova.ai/v1';
 
 // ── Pool configuration ────────────────────────────────────────────
+// All models: RPD 20 (very limited — emergency fallback only)
 const POOL_CONFIG = [
 
-  // ── BUILD TIER — large models, ordered by RPM (fastest first) ────
-  // Meta-Llama-3.3-70B-Instruct: RPM 30 (RPD ~1,440)
-  { model: 'Meta-Llama-3.3-70B-Instruct',    mode: 'stream',   tier: 'build' },
-  { model: 'Meta-Llama-3.3-70B-Instruct',    mode: 'generate', tier: 'build' },
+  // ── BUILD TIER — large models, ordered by priority ───────────────
+  // Meta-Llama-3.3-70B-Instruct: RPD 20
+  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'stream',   tier: 'build' },
+  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'generate', tier: 'build' },
 
-  // Qwen2.5-72B-Instruct: RPM 30 (RPD ~1,440)
-  { model: 'Qwen2.5-72B-Instruct',           mode: 'stream',   tier: 'build' },
-  { model: 'Qwen2.5-72B-Instruct',           mode: 'generate', tier: 'build' },
+  // DeepSeek-V3.2: RPD 20
+  { model: 'DeepSeek-V3.2',                        mode: 'stream',   tier: 'build' },
+  { model: 'DeepSeek-V3.2',                        mode: 'generate', tier: 'build' },
 
-  // Meta-Llama-3.1-405B-Instruct: RPM 10 (RPD ~480) — slowest, last
-  { model: 'Meta-Llama-3.1-405B-Instruct',   mode: 'stream',   tier: 'build' },
-  { model: 'Meta-Llama-3.1-405B-Instruct',   mode: 'generate', tier: 'build' },
+  // Llama-4-Maverick-17B-128E-Instruct: RPD 20
+  { model: 'Llama-4-Maverick-17B-128E-Instruct',   mode: 'stream',   tier: 'build' },
+  { model: 'Llama-4-Maverick-17B-128E-Instruct',   mode: 'generate', tier: 'build' },
 
-  // ── CHAT TIER — small models, high RPM ───────────────────────────
-  // Meta-Llama-3.2-3B-Instruct: RPM 30 (RPD ~1,440)
-  { model: 'Meta-Llama-3.2-3B-Instruct',     mode: 'stream',   tier: 'chat' },
-  { model: 'Meta-Llama-3.2-3B-Instruct',     mode: 'generate', tier: 'chat' },
+  // gpt-oss-120b: RPD 20 (extra capacity)
+  { model: 'gpt-oss-120b',                         mode: 'stream',   tier: 'build' },
+  { model: 'gpt-oss-120b',                         mode: 'generate', tier: 'build' },
 
-  // Qwen2.5-7B-Instruct: RPM 30 (RPD ~1,440)
-  { model: 'Qwen2.5-7B-Instruct',            mode: 'stream',   tier: 'chat' },
-  { model: 'Qwen2.5-7B-Instruct',            mode: 'generate', tier: 'chat' },
+  // ── CHAT TIER — lighter models ────────────────────────────────────
+  // gemma-3-12b-it: RPD 20
+  { model: 'gemma-3-12b-it',                       mode: 'stream',   tier: 'chat' },
+  { model: 'gemma-3-12b-it',                       mode: 'generate', tier: 'chat' },
+
+  // gemma-4-31B-it: RPD 20
+  { model: 'gemma-4-31B-it',                       mode: 'stream',   tier: 'chat' },
+  { model: 'gemma-4-31B-it',                       mode: 'generate', tier: 'chat' },
 ];
 
 const COOLDOWN_MS = 60_000; // 1 min cooldown after 429
