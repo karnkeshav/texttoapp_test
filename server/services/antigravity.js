@@ -691,22 +691,25 @@ async function streamFromAntigravity(newUserMessage, history, apiKey, agentId, o
         } catch (_) {}
       }
     });
-    response.data.on('end',   () => { onDone(fullText); resolve(fullText); });
+    response.data.on('end',   () => {
+      if (isStreamTruncated(fullText)) {
+        const err = new Error('Antigravity stream truncated — escalating to Gemini pool');
+        err.code = 'TRUNCATED_OUTPUT';
+        reject(err);
+        return;
+      }
+      onDone(fullText);
+      resolve(fullText);
+    });
     response.data.on('error', reject);
   });
 }
 
 // ── FALLBACK: Gemini pool (both SDKs, all working models) ─────────
 async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes = '') {
-  // Inject plan context so Gemini gets the same context as Antigravity
-  let contextualMessage = newUserMessage;
-  if (enrichedNotes && enrichedNotes !== 'No additional context.') {
-    contextualMessage =
-      `── PLAN CONTEXT ──\n${enrichedNotes}\n──────────────────\n\n${newUserMessage}`;
-  }
-
+  // enrichedNotes is already injected via buildInput — do not inject twice
   await pooledStream({
-    contents:          buildContents(history, contextualMessage),
+    contents:          buildContents(history, newUserMessage),
     config:            { temperature: 0.7, maxOutputTokens: 32768 },
     apiKey,
     systemInstruction: SYSTEM_INSTRUCTION,
@@ -798,6 +801,9 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
     // Trip the breaker on 429; log all other errors with enough detail for diagnosis
     if (err.response?.status === 429) {
       antigravityBreaker.trip();
+    } else if (err.code === 'TRUNCATED_OUTPUT') {
+      console.warn('[AI] Antigravity truncated — falling back to Gemini pool (higher token ceiling)');
+      // Do NOT trip the breaker — Antigravity is healthy
     } else {
       const statusLabel = err.response?.status ?? 'network';
       console.warn(`[AI] Antigravity ${statusLabel} (${err.message}) — falling back to Gemini pool`);
