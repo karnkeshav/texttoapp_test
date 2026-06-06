@@ -189,7 +189,7 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
 // ── Extract generated files from AI response text (mirrors app.js logic) ──
 function extractFilesFromText(text) {
   const files = [];
-  const BLOCK_RE = /```(?:html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml)\s*([\s\S]*?)```/gi;
+  const BLOCK_RE = /```(?:html|css|javascript|js|json|typescript|ts|go|python|py|ruby|rb|rust|rs|php|toml|mod|bash|sh|yaml|yml)\s*([\s\S]*?)```/gi;
   const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
   let m;
   while ((m = BLOCK_RE.exec(text)) !== null) {
