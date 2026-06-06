@@ -1476,7 +1476,8 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       null,
       onChunk,
       onDone,
-      enrichedNotes
+      enrichedNotes,
+      'build'  // ← highest token models for code generation
     );
 
     // Handle output gate / missing response
@@ -1500,6 +1501,13 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
           sendEvent('status', { message: 'Self-heal complete ✓' });
         }
       } catch (qErr) {
+        if (qErr.code === 'NEEDS_REGENERATION') {
+          sendEvent('error', {
+            message: 'The app was too large for the available AI models right now. ' +
+                     'Please try again in 2 minutes, or simplify the feature list slightly.'
+          });
+          return res.end();
+        }
         console.warn('[QualityPass] Non-fatal — proceeding with original:', qErr.message);
         finalText = capturedText;
       }
@@ -1538,64 +1546,35 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
             const repoMatch = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
             const repoName = repoMatch ? repoMatch[1] : 'myapp';
 
-            const fixPrompt = `⚠️ CRITICAL REBUILD REQUIRED
+            const stackName = req.session.selectedStack
+              ? `${req.session.selectedStack.frontend} + ${req.session.selectedStack.backend}`
+              : 'the requested stack';
 
-The code generation had ERRORS that must be FIXED:
-${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
+            const fixPrompt =
+`REBUILD REQUIRED — previous generation had errors.
 
 REPO_NAME: ${repoName}
+STACK: ${stackName}
 
-═══════════════════════════════════════════════════════════════════════
+ERRORS TO FIX:
+${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
 
-CRITICAL REQUIREMENTS FOR THIS REBUILD:
+REQUIREMENTS (implement these exactly):
+${enrichedNotes.slice(0, 2000)}
 
-1. **COMPLETENESS IS MANDATORY**
-   - Every file MUST be complete — no truncation, no cut-offs, no mid-sentence endings
-   - Double-check that every closing tag, bracket, brace, and parenthesis is present
-   - The code must be SYNTACTICALLY VALID JavaScript/HTML/JSON
+CRITICAL RULES:
+• React JSX MUST be inline in <script type="text/babel"> — NEVER src= attribute
+• CDN MUST use development builds:
+  https://unpkg.com/react@18/umd/react.development.js
+  https://unpkg.com/react-dom@18/umd/react-dom.development.js
+  https://unpkg.com/babel-standalone@7/babel.min.js
+• API calls: fetch('/api/route') — NEVER hardcoded localhost URLs
+• Backend files at ROOT level — no backend/ or frontend/ subdirectories
+• Go serves public/ via http.FileServer — no separate frontend server
+• Implement core features only — quality over quantity
+• Every code block MUST have a matching closing fence
 
-2. **FILE MARKING — REQUIRED FOR ALL FILES**
-   You MUST mark every code block with a FILE comment as its first line:
-   - HTML: <!-- FILE: path/to/file.html -->
-   - JavaScript: // FILE: path/to/file.js
-   - JSON: // FILE: package.json (put on first line BEFORE JSON)
-   - CSS: /* FILE: path/to/file.css */
-
-   Example:
-   \`\`\`json
-   // FILE: package.json
-   { "name": "${repoName}", ... }
-   \`\`\`
-
-3. **Node.js APPS MUST INCLUDE package.json**
-   - VALID JSON format (not JS comments after the FILE line)
-   - "start" or "dev" script that runs the server
-   - ALL dependencies listed (express, react-dom, etc)
-   - No truncation — complete dependencies object
-
-4. **Node.js APPS MUST INCLUDE server.js OR index.js**
-   - Proper Express initialization
-   - All route handlers complete and closed
-   - Public folder serving configured
-   - No cut-off code
-
-5. **HTML/React apps**
-   - <!DOCTYPE html> tag present
-   - <html>, <head>, <body> properly closed
-   - All <script> tags closed
-   - React + Babel CDN links if needed
-
-6. **GENERATE COMPLETE WORKING CODE**
-   - No placeholders like "..." or "// rest of code"
-   - No "assume this is complete" comments
-   - Every function, object, array must be fully written
-
-7. **Keep REPO_NAME as: ${repoName}**
-
-═══════════════════════════════════════════════════════════════════════
-
-NOW: Regenerate the ENTIRE corrected application with ALL files complete and valid:
-            `.trim();
+Start with REPO_NAME: ${repoName} then output ALL files completely.`.trim();
 
             let fixedText = null;
             const onFixChunk = (text) => {
@@ -1605,14 +1584,15 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
               fixedText = text;
             };
 
-            // Generate fix with history context
+            // Generate fix without history — spec already in prompt
             await antigravity.streamChat(
               fixPrompt,
-              history.slice(-4),
+              [],       // ← no history — compact context
               null,
               onFixChunk,
               onFixDone,
-              enrichedNotes
+              '',       // ← spec already in prompt
+              'build'   // ← use highest token model
             );
 
             if (fixedText) {

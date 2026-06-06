@@ -16,6 +16,7 @@
 
 const OpenAI = require('openai');
 const { trackRequest, updateServerLimits } = require('./quotaTracker');
+const { isStreamTruncated } = require('./truncationDetector');
 
 const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 
@@ -23,7 +24,7 @@ const CEREBRAS_BASE_URL = 'https://api.cerebras.ai/v1';
 // Cerebras has only 5 RPM per model — treat as low-throughput emergency fallback.
 const POOL_CONFIG = [
 
-  // ── BUILD TIER — large models for app generation ──────────────────
+  // ── BUILD TIER — large models for app generation (ordered by capacity) ──
   // gpt-oss-120b: RPM 5, RPD 2400, TPM 30000
   { model: 'gpt-oss-120b',              mode: 'stream',   tier: 'build' },
   { model: 'gpt-oss-120b',              mode: 'generate', tier: 'build' },
@@ -200,6 +201,10 @@ async function cerebrasStream({ contents, config, apiKey, systemInstruction, onC
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
       }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[CerebrasPool] Slot ${i} (${slot.model}) truncated — trying next Cerebras slot`);
+        continue;
+      }
       console.log(`[CerebrasPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
       trackRequest('cerebras', slot.model);
       updateServerLimits('cerebras', slot.model, httpResp.headers);
@@ -238,6 +243,10 @@ async function cerebrasStream({ contents, config, apiKey, systemInstruction, onC
       for await (const chunk of stream) {
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
+      }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[CerebrasPool] Cooldown slot ${i} (${slot.model}) truncated — trying next Cerebras slot`);
+        continue;
       }
       console.log(`[CerebrasPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

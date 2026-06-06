@@ -40,6 +40,7 @@
 const { GoogleGenAI }        = require('@google/genai');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const { trackRequest }       = require('./quotaTracker');
+const { isStreamTruncated }  = require('./truncationDetector');
 
 // ── Pool configuration ────────────────────────────────────────────────────────
 // tier: 'build' → app generation, plan analysis, code repair, vision
@@ -49,29 +50,23 @@ const POOL_CONFIG = [
 
   // ════════════════════════════════════════════════════════════════════════════
   // BUILD TIER — highest-quality models for code generation + reasoning
-  // Priority: gemini-2.5-flash first (stable), then 3.5/preview (higher per-minute quota)
+  // Priority: highest token ceiling first (gemini-3-flash-preview, then 2.5-flash)
   // ════════════════════════════════════════════════════════════════════════════
 
-  { sdk: 'new',    model: 'gemini-2.5-flash',         mode: 'generate', tier: 'build' },
-  { sdk: 'new',    model: 'gemini-2.5-flash',         mode: 'stream',   tier: 'build' },
-  { sdk: 'legacy', model: 'gemini-2.5-flash',         mode: 'generate', tier: 'build' },
-  { sdk: 'legacy', model: 'gemini-2.5-flash',         mode: 'stream',   tier: 'build' },
-
-  // gemini-3.5-flash — newest model; gets 429 under load but still usable
-  { sdk: 'new',    model: 'gemini-3.5-flash',         mode: 'generate', tier: 'build' },
-  { sdk: 'new',    model: 'gemini-3.5-flash',         mode: 'stream',   tier: 'build' },
-  { sdk: 'legacy', model: 'gemini-3.5-flash',         mode: 'generate', tier: 'build' },
-  { sdk: 'legacy', model: 'gemini-3.5-flash',         mode: 'stream',   tier: 'build' },
-
-  // gemini-3-flash-preview — new SDK only (legacy gives error, skip those entries)
-  { sdk: 'new',    model: 'gemini-3-flash-preview',   mode: 'generate', tier: 'build' },
   { sdk: 'new',    model: 'gemini-3-flash-preview',   mode: 'stream',   tier: 'build' },
-
-  // gemini-flash-latest — alias model; rate-limited but adds capacity
-  { sdk: 'new',    model: 'gemini-flash-latest',      mode: 'generate', tier: 'build' },
+  { sdk: 'new',    model: 'gemini-3-flash-preview',   mode: 'generate', tier: 'build' },
+  { sdk: 'new',    model: 'gemini-2.5-flash',         mode: 'stream',   tier: 'build' },
+  { sdk: 'new',    model: 'gemini-2.5-flash',         mode: 'generate', tier: 'build' },
+  { sdk: 'legacy', model: 'gemini-2.5-flash',         mode: 'stream',   tier: 'build' },
+  { sdk: 'legacy', model: 'gemini-2.5-flash',         mode: 'generate', tier: 'build' },
+  { sdk: 'new',    model: 'gemini-3.5-flash',         mode: 'stream',   tier: 'build' },
+  { sdk: 'new',    model: 'gemini-3.5-flash',         mode: 'generate', tier: 'build' },
+  { sdk: 'legacy', model: 'gemini-3.5-flash',         mode: 'stream',   tier: 'build' },
+  { sdk: 'legacy', model: 'gemini-3.5-flash',         mode: 'generate', tier: 'build' },
   { sdk: 'new',    model: 'gemini-flash-latest',      mode: 'stream',   tier: 'build' },
-  { sdk: 'legacy', model: 'gemini-flash-latest',      mode: 'generate', tier: 'build' },
+  { sdk: 'new',    model: 'gemini-flash-latest',      mode: 'generate', tier: 'build' },
   { sdk: 'legacy', model: 'gemini-flash-latest',      mode: 'stream',   tier: 'build' },
+  { sdk: 'legacy', model: 'gemini-flash-latest',      mode: 'generate', tier: 'build' },
 
   // ════════════════════════════════════════════════════════════════════════════
   // CHAT TIER — lightweight models for conversational / reasoning / conversion
@@ -348,6 +343,13 @@ async function pooledStream({ contents, config, apiKey, systemInstruction, onChu
         const text = chunk.text || '';
         if (text) { fullText += text; onChunk(text); }
       }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[GeminiPool] Slot ${i} (${slot.sdk}/${slot.model}) output truncated — escalating to fallback chain`);
+        // Do not try other Gemini slots — same ceiling. Exit pool immediately.
+        const err = new Error('Gemini output truncated — escalating to higher-token fallback');
+        err.code = 'GEMINI_POOL_EXHAUSTED';
+        throw err;
+      }
       console.log(`[GeminiPool] stream ✅ slot ${i} (${slot.sdk}/${slot.model}) [${slot.tier}]`);
       trackRequest('gemini', slot.model);
       onDone(fullText);
@@ -385,6 +387,12 @@ async function pooledStream({ contents, config, apiKey, systemInstruction, onChu
       for await (const chunk of stream) {
         const text = chunk.text || '';
         if (text) { fullText += text; onChunk(text); }
+      }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[GeminiPool] Cooldown slot ${i} (${slot.sdk}/${slot.model}) output truncated — escalating to fallback`);
+        const err = new Error('Gemini output truncated — escalating to higher-token fallback');
+        err.code = 'GEMINI_POOL_EXHAUSTED';
+        throw err;
       }
       console.log(`[GeminiPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

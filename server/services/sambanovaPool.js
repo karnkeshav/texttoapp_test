@@ -17,6 +17,7 @@
 
 const OpenAI = require('openai');
 const { trackRequest, updateServerLimits } = require('./quotaTracker');
+const { isStreamTruncated } = require('./truncationDetector');
 
 const SAMBANOVA_BASE_URL = 'https://api.sambanova.ai/v1';
 
@@ -24,14 +25,14 @@ const SAMBANOVA_BASE_URL = 'https://api.sambanova.ai/v1';
 // All models: RPD 20 (very limited — emergency fallback only)
 const POOL_CONFIG = [
 
-  // ── BUILD TIER — large models, ordered by priority ───────────────
-  // Meta-Llama-3.3-70B-Instruct: RPD 20
-  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'stream',   tier: 'build' },
-  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'generate', tier: 'build' },
-
+  // ── BUILD TIER — large models, ordered by token capacity ─────────
   // DeepSeek-V3.2: RPD 20
   { model: 'DeepSeek-V3.2',                        mode: 'stream',   tier: 'build' },
   { model: 'DeepSeek-V3.2',                        mode: 'generate', tier: 'build' },
+
+  // Meta-Llama-3.3-70B-Instruct: RPD 20
+  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'stream',   tier: 'build' },
+  { model: 'Meta-Llama-3.3-70B-Instruct',          mode: 'generate', tier: 'build' },
 
   // Llama-4-Maverick-17B-128E-Instruct: RPD 20
   { model: 'Llama-4-Maverick-17B-128E-Instruct',   mode: 'stream',   tier: 'build' },
@@ -213,6 +214,10 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
       }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[SambanovaPool] Slot ${i} (${slot.model}) truncated — trying next SambaNova slot`);
+        continue;
+      }
       console.log(`[SambanovaPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
       trackRequest('sambanova', slot.model);
       updateServerLimits('sambanova', slot.model, httpResp.headers);
@@ -251,6 +256,10 @@ async function sambanovaStream({ contents, config, apiKey, systemInstruction, on
       for await (const chunk of stream) {
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
+      }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[SambanovaPool] Cooldown slot ${i} (${slot.model}) truncated — trying next SambaNova slot`);
+        continue;
       }
       console.log(`[SambanovaPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

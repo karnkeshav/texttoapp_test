@@ -43,11 +43,18 @@ const CRITICAL_TAGS = new Set([
 
 // ── 1. Tag balance ────────────────────────────────────────────────
 function checkTagBalance(html) {
+  // Strip script block contents — JSX inside <script type="text/babel">
+  // is NOT HTML and must never be parsed as HTML tags
+  const htmlWithoutScripts = html.replace(
+    /<script\b[^>]*>([\s\S]*?)<\/script>/gi,
+    (match, content) => match.replace(content, ' ')
+  );
+
   const stack = [];
   const tagRe = /<(\/?)([a-zA-Z][a-zA-Z0-9]*)(?:\s[^>]*)?(\/)?>/g;
   let match;
 
-  while ((match = tagRe.exec(html)) !== null) {
+  while ((match = tagRe.exec(htmlWithoutScripts)) !== null) {
     const isClose   = match[1] === '/';
     const tag       = match[2].toLowerCase();
     const selfClose = match[3] === '/';
@@ -216,24 +223,42 @@ function checkMetaTags(html) {
 }
 
 // ── Repair pass ───────────────────────────────────────────────────
-async function runRepairPass(code, errors, apiKey, _model) {
-  const errorList = errors.map(e => `• ${e}`).join('\n');
+async function runRepairPass(code, errors, apiKey) {
+  // If unclosed tags exist AND file has Babel script block,
+  // the real issue is truncated JSX — repair cannot help
+  const hasBabelScript = /<script[^>]+type\s*=\s*["']text\/babel["']/i.test(code);
+  const hasUnclosedTags = errors.some(e => /unclosed critical tags/i.test(e));
 
-  const prompt = `You are a code repair assistant. Fix ONLY the following structural issues in this HTML file.
-Return ONLY the corrected HTML — no explanations, no markdown fences, no commentary.
+  if (hasBabelScript && hasUnclosedTags) {
+    const err = new Error('Unclosed tags inside Babel script = truncated JSX, not malformed HTML — regeneration required');
+    err.code = 'NEEDS_REGENERATION';
+    throw err;
+  }
 
-ISSUES TO FIX:
-${errorList}
+  // For CDN issues — send only the head section
+  const isCdnIssue = errors.some(e => /cdn|script|babel|react|production/i.test(e));
+  const codeToSend = isCdnIssue
+    ? (code.match(/<head[\s\S]*?<\/head>/i)?.[0] || code.slice(0, 1500))
+    : code.length > 3000
+      ? code.slice(0, 1500) + '\n<!-- ... -->\n' + code.slice(-1000)
+      : code;
 
-HTML FILE:
-${code}`;
+  const prompt =
+`Fix ONLY these structural issues. Return ONLY the corrected complete HTML.
+No explanations, no markdown fences, no commentary.
 
-  // pooledGenerate tries all working SDK/model slots automatically
+ISSUES:
+${errors.map(e => `• ${e}`).join('\n')}
+
+HTML:
+${codeToSend}`;
+
   const text = await geminiPool.pooledGenerate({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     config:   { temperature: 0.1, maxOutputTokens: 8192 },
     apiKey,
   });
+
   const fenced = text.match(/```(?:html|go|python|py|ruby|rb|rust|rs|php)?\s*([\s\S]*?)```/i);
   return fenced ? fenced[1].trim() : text.trim();
 }

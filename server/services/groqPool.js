@@ -14,13 +14,14 @@
 
 const Groq = require('groq-sdk');
 const { trackRequest, updateServerLimits } = require('./quotaTracker');
+const { isStreamTruncated } = require('./truncationDetector');
 
 // ── Pool configuration ────────────────────────────────────────────
 // Each model has its own independent quota — the key advantage of pooling.
 // All models: 131072 context window
 const POOL_CONFIG = [
 
-  // ── BUILD TIER — high-quality 70B+ models ────────────────────────
+  // ── BUILD TIER — high-quality 70B+ models (ordered by token capacity) ────
   // llama-3.3-70b-versatile: RPD 1,000 RPM 30 TPM 6,000
   { model: 'llama-3.3-70b-versatile',                        mode: 'stream',   tier: 'build' },
   { model: 'llama-3.3-70b-versatile',                        mode: 'generate', tier: 'build' },
@@ -29,13 +30,13 @@ const POOL_CONFIG = [
   { model: 'meta-llama/llama-4-scout-17b-16e-instruct',      mode: 'stream',   tier: 'build' },
   { model: 'meta-llama/llama-4-scout-17b-16e-instruct',      mode: 'generate', tier: 'build' },
 
-  // openai/gpt-oss-120b: RPD 1,000 RPM 30 TPM 6,000
-  { model: 'openai/gpt-oss-120b',                            mode: 'stream',   tier: 'build' },
-  { model: 'openai/gpt-oss-120b',                            mode: 'generate', tier: 'build' },
-
   // qwen/qwen3-32b: RPD 1,000 RPM 30 TPM 6,000
   { model: 'qwen/qwen3-32b',                                 mode: 'stream',   tier: 'build' },
   { model: 'qwen/qwen3-32b',                                 mode: 'generate', tier: 'build' },
+
+  // openai/gpt-oss-120b: RPD 1,000 RPM 30 TPM 6,000
+  { model: 'openai/gpt-oss-120b',                            mode: 'stream',   tier: 'build' },
+  { model: 'openai/gpt-oss-120b',                            mode: 'generate', tier: 'build' },
 
   // openai/gpt-oss-20b: RPD 1,000 RPM 30 TPM 6,000 (extra capacity)
   { model: 'openai/gpt-oss-20b',                             mode: 'stream',   tier: 'build' },
@@ -213,6 +214,12 @@ async function groqStream({ contents, config, apiKey, systemInstruction, onChunk
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
       }
+      // Check finish_reason from last chunk — 'length' means token limit hit
+      const lastChunkReason = stream?.finalChatCompletion?.choices?.[0]?.finish_reason;
+      if (lastChunkReason === 'length' || isStreamTruncated(fullText)) {
+        console.warn(`[GroqPool] Slot ${i} (${slot.model}) hit token limit — trying next Groq slot`);
+        continue; // try next Groq model — they have different ceilings
+      }
       console.log(`[GroqPool] stream ✅ slot ${i} (${slot.model}) [${slot.tier}]`);
       trackRequest('groq', slot.model);
       updateServerLimits('groq', slot.model, httpResp.headers);
@@ -252,6 +259,10 @@ async function groqStream({ contents, config, apiKey, systemInstruction, onChunk
       for await (const chunk of stream) {
         const text = chunk.choices?.[0]?.delta?.content || '';
         if (text) { fullText += text; onChunk(text); }
+      }
+      if (isStreamTruncated(fullText)) {
+        console.warn(`[GroqPool] Cooldown slot ${i} (${slot.model}) truncated — trying next Groq slot`);
+        continue;
       }
       console.log(`[GroqPool] stream ✅ slot ${i} after cooldown`);
       onDone(fullText);

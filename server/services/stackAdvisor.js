@@ -442,6 +442,21 @@ function runDryCheck(files, stack) {
     }
   }
 
+  // ── Truncation check — mismatched fences mean truncated output ────
+  for (const f of files) {
+    const opens  = (f.content.match(/^```\S*/gm) || []).length;
+    const closes = (f.content.match(/^```\s*$/gm) || []).length;
+    if (opens > closes) {
+      issues.push(`${f.path}: output appears truncated (${opens} opening fences, ${closes} closing)`);
+    }
+    // HTML with Babel but no closing </html>
+    if (f.path.endsWith('.html') &&
+        /<script[^>]+text\/babel/i.test(f.content) &&
+        !/<\/html>/i.test(f.content)) {
+      issues.push(`${f.path}: HTML truncated — React/Babel script block has no closing </html>`);
+    }
+  }
+
   const passed = issues.length === 0;
   const summary = passed
     ? `✅ All checks passed`
