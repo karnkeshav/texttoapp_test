@@ -651,11 +651,30 @@ function buildSystemPrompt(mode = 'build') {
 // Keep SYSTEM_INSTRUCTION as an alias for backward compatibility:
 const SYSTEM_INSTRUCTION = buildSystemPrompt('build');
 
+// ── Strip code blocks from history to reduce token bloat ─────────
+// AI code responses (8,000-15,000 tokens each) must be removed.
+// Only conversational turns (questions, answers, style choices) are needed.
+// The spec lives in enrichedNotes — history does not need to repeat code.
+function stripCodeFromHistory(history) {
+  return history.map(turn => {
+    const content = turn.content || '';
+    // Remove all code blocks — they are huge and not needed in history
+    const stripped = content
+      .replace(/```[\s\S]*?```/g, '[code block removed]')
+      .replace(/REPO_NAME:\s*[^\n]+/g, '')
+      .trim();
+    // If the entire turn was just code, skip it
+    if (stripped.length < 10) return null;
+    return { ...turn, content: stripped };
+  }).filter(Boolean);
+}
+
 // ── Build flat input string for Antigravity ───────────────────────
-// Only the last 3 history turns are embedded in the flat input string.
+// Only the last 6 conversational turns (after code stripping) are embedded.
+// Stripped turns are much smaller (~150-200 tokens each) vs ~15,000 with code.
 // The build spec / style choices live in enrichedNotes, not in raw history,
 // so trimming history here doesn't lose any critical build context while
-// keeping the per-request token footprint well inside Antigravity's quota.
+// keeping the per-request token footprint well inside quota (~8k tokens total).
 function buildInput(history, newUserMessage, enrichedNotes = '') {
   const lines = [SYSTEM_INSTRUCTION, ''];
 
@@ -667,8 +686,9 @@ function buildInput(history, newUserMessage, enrichedNotes = '') {
     lines.push('');
   }
 
-  // Trim to last 3 turns — reduces TPM without losing spec context
-  const recentHistory = history.slice(-3);
+  // Strip code blocks, then trim to last 6 conversational turns
+  // Stripped turns are ~150-200 tokens each; original turns with code are ~15,000+ tokens
+  const recentHistory = stripCodeFromHistory(history).slice(-6);
   if (recentHistory.length > 0) {
     lines.push('CONVERSATION SO FAR:');
     recentHistory.forEach(({ role, content }) => {
@@ -697,12 +717,13 @@ function buildContents(history, newUserMessage) {
 // ── Build enriched contents for fallback pools ────────────────────
 // Mirrors the contextualMessage logic inside streamFromGeminiPool so
 // Groq/Cerebras/SambaNova receive the same plan-context enrichment.
+// Strip code blocks from history to keep token count manageable.
 function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
   let msg = newUserMessage;
   if (enrichedNotes && enrichedNotes !== 'No additional context.') {
     msg = `── PLAN CONTEXT ──\n${enrichedNotes}\n──────────────────\n\n${newUserMessage}`;
   }
-  return buildContents(history, msg);
+  return buildContents(stripCodeFromHistory(history), msg);
 }
 
 // ── Extract text from Antigravity SSE event ───────────────────────
@@ -786,8 +807,9 @@ async function streamFromAntigravity(newUserMessage, history, apiKey, agentId, o
 // ── FALLBACK: Gemini pool (both SDKs, all working models) ─────────
 async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes = '', tier = 'build') {
   // enrichedNotes is already injected via buildInput — do not inject twice
+  // Strip code blocks from history to reduce token bloat
   await pooledStream({
-    contents:          buildContents(history, newUserMessage),
+    contents:          buildContents(stripCodeFromHistory(history), newUserMessage),
     config:            { temperature: 0.7, maxOutputTokens: 32768 },
     apiKey,
     systemInstruction: SYSTEM_INSTRUCTION,
