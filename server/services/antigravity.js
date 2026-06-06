@@ -38,10 +38,12 @@ const antigravityBreaker = {
   },
 };
 
-// ── System prompt ─────────────────────────────────────────────────
-const SYSTEM_INSTRUCTION = `You are Ready4Launch — an elite frontend engineer who crafts visually stunning, fully functional single-page web apps using only HTML and vanilla JavaScript.
+// ── System prompt — split into 3 modular constants ────────────────
+// SYSTEM_CORE: fundamental rules, structure, behaviour (no visual design)
+// SYSTEM_DESIGN: visual/design system rules only
+// SYSTEM_SANITY: validation checklist
 
-══════════════════════════════════════════════════════
+const SYSTEM_DESIGN = `══════════════════════════════════════════════════════
 MANDATORY DESIGN SYSTEM  (every rule applies to every app — no exceptions)
 ══════════════════════════════════════════════════════
 
@@ -193,6 +195,9 @@ Show loading states (spinner or skeleton) for any async operation.
 No "Lorem ipsum". No "Sample text". No "Coming soon". No "Placeholder".
 Real feature names, real micro-copy, real sample data that fits the domain.
 Sample data should be believable: real-sounding names, realistic numbers, proper dates.
+`;
+
+const SYSTEM_CORE = `You are Ready4Launch — an elite frontend engineer who crafts visually stunning, fully functional single-page web apps using only HTML and vanilla JavaScript.
 
 ══════════════════════════════════════════════════════
 BEHAVIOUR
@@ -571,7 +576,80 @@ SPEC CHECK (all apps):
 
 All checks pass → write the code. Any check fails → fix it first.
 
----`;
+SCOPE RULE — MANDATORY:
+Implement core features only. Never pad with placeholder sections.
+Every line of code must earn its place.
+A working 400-line app beats a broken 2000-line app.
+If the feature list is long, implement the 3 most important features fully
+rather than all features partially.
+`;
+
+const SYSTEM_SANITY = `══════════════════════════════════════════════════════
+SILENT SANITY CHECK  (run before writing the first line of code)
+══════════════════════════════════════════════════════
+
+FOR STATIC / VANILLA JS APPS:
+  DESIGN CHECK:
+    ✓ Hero section with gradient background + floating orb elements
+    ✓ Glassmorphism cards on all content panels (backdrop-filter: blur)
+    ✓ Gradient heading on the main title
+    ✓ fadeUp entrance animations on load (staggered delays)
+    ✓ All buttons have hover lift + active scale states
+  FILE STRUCTURE CHECK:
+    ✓ index.html links to css/style.css and js/app.js (correct relative paths)
+    ✓ index.html has zero inline <style> or <script> blocks
+    ✓ Each code block starts with its FILE: comment on line 1
+  FUNCTION CHECK:
+    ✓ Every button triggers a visible action
+    ✓ All localStorage reads/writes working correctly
+    ✓ All JS functions defined before use; DOM queries run after DOMContentLoaded
+  CONTENT CHECK:
+    ✓ Zero Lorem Ipsum or placeholder text
+    ✓ 4–6 realistic sample data items pre-loaded
+    ✓ Empty states shown when no data exists
+  LAYOUT CHECK:
+    ✓ Renders correctly at 375px (mobile) and 1280px (laptop)
+
+FOR NODE.JS / EXPRESS APPS:
+  BACKEND CHECK:
+    ✓ package.json has "start" script pointing to server.js
+    ✓ server.js uses const PORT = process.env.PORT || 3000
+    ✓ app.listen(PORT, ...) is the last line of server.js
+    ✓ All require()d packages are listed in package.json dependencies
+    ✓ express.static('public') serves the frontend
+    ✓ All API routes return JSON; use res.json() not res.send()
+    ✓ No ES module syntax (import/export) — CommonJS only
+  FRONTEND CHECK (public/):
+    ✓ public/index.html is a complete HTML page
+    ✓ Frontend JS uses fetch('/api/...') to call the Express routes
+    ✓ No hardcoded localhost URLs — use relative paths (/api/...)
+  CONTENT CHECK:
+    ✓ Zero Lorem Ipsum or placeholder text
+    ✓ Realistic sample data pre-loaded on first run
+
+SPEC CHECK (all apps):
+  ✓ Every feature mentioned by the user is implemented
+  ✓ The technology requested (Node.js / React / TypeScript) is actually used
+  ✓ User's chosen theme/colours from enrichedNotes are applied
+
+All checks pass → write the code. Any check fails → fix it first.
+`;
+
+function buildSystemPrompt(mode = 'build') {
+  if (mode === 'chat' || mode === 'reasoning' || mode === 'conversion') {
+    // Minimal — just core rules, no design system
+    return SYSTEM_CORE;
+  }
+  if (mode === 'repair') {
+    // Repair needs structure rules but not full design system
+    return SYSTEM_CORE + '\n\n' + SYSTEM_SANITY;
+  }
+  // Full build — all sections
+  return SYSTEM_CORE + '\n\n' + SYSTEM_DESIGN + '\n\n' + SYSTEM_SANITY;
+}
+
+// Keep SYSTEM_INSTRUCTION as an alias for backward compatibility:
+const SYSTEM_INSTRUCTION = buildSystemPrompt('build');
 
 // ── Build flat input string for Antigravity ───────────────────────
 // Only the last 3 history turns are embedded in the flat input string.
@@ -706,7 +784,7 @@ async function streamFromAntigravity(newUserMessage, history, apiKey, agentId, o
 }
 
 // ── FALLBACK: Gemini pool (both SDKs, all working models) ─────────
-async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes = '') {
+async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes = '', tier = 'build') {
   // enrichedNotes is already injected via buildInput — do not inject twice
   await pooledStream({
     contents:          buildContents(history, newUserMessage),
@@ -715,13 +793,14 @@ async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, on
     systemInstruction: SYSTEM_INSTRUCTION,
     onChunk,
     onDone,
+    tier,
   });
 }
 
 // ── Groq → Cerebras → SambaNova fallback chain ───────────────────
 // Called when Gemini pool is exhausted. Each pool throws with a specific
 // error code so we can distinguish "exhausted" from "unexpected error".
-async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone) {
+async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier = 'build') {
   const contents = buildEnrichedContents(history, newUserMessage, enrichedNotes);
 
   // ── Groq pool ─────────────────────────────────────────────────
@@ -733,6 +812,7 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
       systemInstruction: SYSTEM_INSTRUCTION,
       onChunk,
       onDone,
+      tier,
     });
     console.log('[AI] Groq pool ✅');
     return;
@@ -750,6 +830,7 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
       systemInstruction: SYSTEM_INSTRUCTION,
       onChunk,
       onDone,
+      tier,
     });
     console.log('[AI] Cerebras pool ✅');
     return;
@@ -766,12 +847,13 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
     systemInstruction: SYSTEM_INSTRUCTION,
     onChunk,
     onDone,
+    tier,
   });
   console.log('[AI] SambaNova pool ✅');
 }
 
 // ── Main entry point ──────────────────────────────────────────────
-async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone, enrichedNotes = '') {
+async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDone, enrichedNotes = '', tier = 'build') {
   const apiKey  = process.env.GEMINI_API_KEY;
   const agentId = process.env.ANTIGRAVITY_AGENT_ID || 'antigravity-preview-05-2026';
 
@@ -781,7 +863,7 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
   if (antigravityBreaker.isOpen()) {
     console.log(`[AI] Antigravity breaker open (${antigravityBreaker.remainingSeconds()}s left) — routing to Gemini pool`);
     try {
-      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes, tier);
       console.log('[AI] Gemini pool ✅');
       return;
     } catch (geminiErr) {
@@ -789,7 +871,7 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
       console.warn('[AI] Gemini pool exhausted — trying Groq pool');
     }
     // Gemini exhausted — fall through to Groq → Cerebras → SambaNova
-    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier);
     return;
   }
 
@@ -810,14 +892,14 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
     }
     // Always fall back — Gemini pool has its own retry logic across many models
     try {
-      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes);
+      await streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, onDone, enrichedNotes, tier);
       console.log('[AI] Gemini pool ✅');
       return;
     } catch (geminiErr) {
       if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
       console.warn('[AI] Gemini pool exhausted — trying Groq pool');
     }
-    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone);
+    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier);
   }
 }
 
