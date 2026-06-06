@@ -3,6 +3,7 @@ const { listRepos, createRepo, pushFiles, enablePages, getFileContent } = requir
 const { auditAndHeal } = require('../services/codeQuality');
 const { runApp, needsLocalRunner, isBackendApp, getRunInfo } = require('../services/appRunner');
 const { getRunCommand } = require('../services/stackAdvisor');
+const { generateStartScript } = require('../services/startScriptGenerator');
 
 const router = express.Router();
 
@@ -133,7 +134,7 @@ router.post('/push', requireAuth, async (req, res) => {
 
 // Create new repo → process files → push → enable Pages — all in one shot
 router.post('/deploy', requireAuth, async (req, res) => {
-  const { repoName, files, description } = req.body;
+  const { repoName, files, description, stack } = req.body;
   if (!repoName || !files?.length) {
     return res.status(400).json({ error: 'repoName and files are required' });
   }
@@ -167,11 +168,23 @@ router.post('/deploy', requireAuth, async (req, res) => {
       }
     }));
 
+    // 1.5. Generate and inject start.ps1 for full-stack apps
+    let filesToDeploy = auditedFiles;
+    // Use stack from request body (passed from frontend), fall back to session stack
+    const deployStack = stack || req.session.selectedStack || req.session.detectedStack || null;
+    if (deployStack?.backend && deployStack.backend !== 'none' && deployStack.frontend && deployStack.frontend !== 'html') {
+      const startScript = generateStartScript(deployStack);
+      if (startScript) {
+        filesToDeploy = [...auditedFiles, { path: 'start.ps1', content: startScript }];
+        console.log(`[Deploy] Generated start.ps1 for ${deployStack.frontend}+${deployStack.backend} stack`);
+      }
+    }
+
     // 2. Create the public repo (auto-renames if name is taken)
     const { name, owner } = await createRepo(req.session.githubToken, repoName, description);
 
     // 3. Apply CDN pinning + telemetry injection before committing
-    const processed = processFiles(auditedFiles, process.env.BACKEND_ORIGIN);
+    const processed = processFiles(filesToDeploy, process.env.BACKEND_ORIGIN);
 
     // 4. Atomic push — all files in one commit (prevents partial deploy state)
     const repoUrl = await pushFiles(
@@ -217,7 +230,7 @@ router.post('/deploy', requireAuth, async (req, res) => {
       localUrl,
       runCommand,   // e.g. "go run ." — shown as fallback copy-paste command
       isBackend,    // frontend uses this to show the right success card
-      stack:        sessionStack,   // lets frontend populate runLocally() correctly
+      stack:        deployStack || sessionStack,   // lets frontend populate runLocally() correctly
       repoName:     name,
     });
   } catch (err) {

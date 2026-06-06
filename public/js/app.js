@@ -1141,7 +1141,8 @@ async function deployToGitHub(fileId, btn) {
       : {
           repoName,
           files,
-          description: `Built with Ready4Launch`
+          description: `Built with Ready4Launch`,
+          stack: stack || { frontend: 'html', backend: 'none' }
         };
 
     const res  = await fetch(endpoint, {
