@@ -393,69 +393,114 @@ Maximum 5 issues. Keep the entire response under 150 words.`;
  * Returns the full response string (REPO_NAME + intro + ```html...```)
  */
 async function semanticRepair(generatedText, issues, requirements, apiKey) {
-  // Multi-file output: more than one code block (html + css + js).
-  // We can't safely repair and reconstruct without losing the other files,
-  // so skip the repair step and return the original.
-  const codeBlockCount = (generatedText.match(/```(?:html|css|javascript|js|go|python|py|ruby|rb|rust|rs|php|toml|mod)\b/gi) || []).length;
-  if (codeBlockCount > 1) {
-    console.warn('[SemanticRepair] Multi-file output detected — skipping repair to preserve file structure');
-    return generatedText;
+
+  // ── STEP 0: Detect truncation — repair cannot fix a cut file ──────
+  const openFences  = (generatedText.match(/^```\S*/gm) || []).length;
+  const closeFences = (generatedText.match(/^```\s*$/gm) || []).length;
+  const hasTruncatedFence = openFences > closeFences;
+  const isTruncationIssue = issues.some(i =>
+    /truncat|cut off|incomplete|missing.*clos|never closed|cut mid/i.test(i)
+  );
+
+  if (hasTruncatedFence || isTruncationIssue) {
+    console.warn('[SemanticRepair] Truncation detected — signalling regeneration');
+    const err = new Error('Output truncated — regeneration required, repair cannot help');
+    err.code = 'NEEDS_REGENERATION';
+    throw err;
   }
 
-  const htmlMatch = generatedText.match(/```html\s*([\s\S]*?)```/i)
-                 || generatedText.match(/```html\s*([\s\S]*?<\/html>)/i);
-  const currentHtml = htmlMatch ? htmlMatch[1] : generatedText;
+  // ── ATTEMPT 1: Targeted file repair ──────────────────────────────
+  // Identify which specific file has the issue and repair only that file
+  console.log('[SemanticRepair] Attempt 1 — targeted file repair');
 
-  const issueList = issues.map(i => `• ${i}`).join('\n');
+  const BLOCK_RE = /```(?:html|css|javascript|js|go|python|py|ruby|rb|rust|rs|php|toml|mod|json)\s*([\s\S]*?)```/gi;
+  const FILE_RE  = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>\n]+)/i;
 
-  const repairPrompt =
-`You are fixing a generated web app that has quality issues.
-
-SPECIFICATION:
-${requirements.slice(0, 2500)}
-
-ISSUES TO FIX:
-${issueList}
-
-CURRENT HTML:
-${currentHtml}
-
-Fix ALL listed issues while keeping everything else exactly as-is.
-Return ONLY the corrected complete HTML file — no markdown fences, no commentary.`;
-
-  let repairedHtml = '';
-  try {
-    await geminiPool.cascadeStream({
-      contents:          [{ role: 'user', parts: [{ text: repairPrompt }] }],
-      config:            { temperature: 0.2, maxOutputTokens: 32768 },
-      apiKey,
-      systemInstruction: '',
-      onChunk: () => {},                        // silent — accumulate via onDone
-      onDone:  (text) => { repairedHtml = text; },
-    });
-  } catch (err) {
-    console.warn('[SemanticRepair] cascadeStream failed:', err.message);
-    return generatedText; // return original on error
+  const blocks = [];
+  let m;
+  while ((m = BLOCK_RE.exec(generatedText)) !== null) {
+    const content   = m[1] || '';
+    const firstLine = content.split('\n')[0];
+    const pathMatch = FILE_RE.exec(firstLine);
+    if (pathMatch) {
+      blocks.push({
+        full:    m[0],
+        path:    pathMatch[1],
+        content: content.split('\n').slice(1).join('\n').trim(),
+      });
+    }
   }
 
-  // Strip any fences the AI added
-  repairedHtml = repairedHtml
-    .replace(/^```html?\s*/i, '')
-    .replace(/```\s*$/, '')
-    .trim();
-
-  if (!repairedHtml || repairedHtml.length < 200) {
-    console.warn('[SemanticRepair] Repair output too short — keeping original');
-    return generatedText;
+  // Find which file is broken
+  const brokenPaths = new Set();
+  for (const issue of issues) {
+    for (const block of blocks) {
+      if (
+        issue.toLowerCase().includes(block.path.toLowerCase()) ||
+        (/react|babel|cdn|script|production\.min/i.test(issue) && block.path.endsWith('.html')) ||
+        (/fetch|localhost|hardcoded/i.test(issue) && block.path.endsWith('.js'))
+      ) {
+        brokenPaths.add(block.path);
+      }
+    }
+  }
+  if (brokenPaths.size === 0 && blocks.some(b => b.path.endsWith('.html'))) {
+    blocks.filter(b => b.path.endsWith('.html')).forEach(b => brokenPaths.add(b.path));
   }
 
-  // Reconstruct full response, preserving intro line and REPO_NAME
-  const introMatch = generatedText.match(/^(Here[^\n]+\n)/i);
-  const repoMatch  = generatedText.match(/(REPO_NAME:\s*[^\n]+)/i);
-  const intro    = introMatch ? introMatch[1] : '';
-  const repoLine = repoMatch  ? repoMatch[1] + '\n\n' : '';
+  let attempt1Result = generatedText;
+  for (const targetPath of brokenPaths) {
+    const targetBlock = blocks.find(b => b.path === targetPath);
+    if (!targetBlock) continue;
 
-  return `${intro}${repoLine}\`\`\`html\n${repairedHtml}\n\`\`\``;
+    // For CDN/script issues — send only the <head> section
+    // For other issues — send first 2000 chars
+    const isHeadIssue = /cdn|babel|react|script|production\.min/i.test(issues.join(' '));
+    const contentToSend = isHeadIssue
+      ? (targetBlock.content.match(/<head[\s\S]*?<\/head>/i)?.[0] || targetBlock.content.slice(0, 1500))
+      : targetBlock.content.slice(0, 2000);
+
+    const repairPrompt =
+`Fix these specific issues in ${targetPath}. Return ONLY the corrected complete file content.
+No fences, no FILE comment, no explanation.
+
+ISSUES:
+${issues.map(i => `• ${i}`).join('\n')}
+
+RULES:
+• React JSX must be INLINE in <script type="text/babel"> — never src= attribute
+• CDN URLs must be exactly:
+  https://unpkg.com/react@18/umd/react.development.js
+  https://unpkg.com/react-dom@18/umd/react-dom.development.js
+  https://unpkg.com/babel-standalone@7/babel.min.js
+• API calls must use relative URLs: fetch('/api/route')
+
+CURRENT FILE (relevant section):
+${contentToSend}`;
+
+    try {
+      const fixed = await geminiPool.pooledGenerate({
+        contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
+        config:   { temperature: 0.1, maxOutputTokens: 8192 },
+        apiKey,
+      });
+
+      if (fixed && fixed.trim().length > 100) {
+        // Determine the correct fence language for this file
+        const ext = targetPath.split('.').pop();
+        const lang = ext === 'html' ? 'html' : ext === 'css' ? 'css' :
+                     ext === 'go' ? 'go' : ext === 'py' ? 'python' :
+                     ext === 'json' ? 'json' : 'javascript';
+        const newBlock = `\`\`\`${lang}\n// FILE: ${targetPath}\n${fixed.trim()}\n\`\`\``;
+        attempt1Result = attempt1Result.replace(targetBlock.full, newBlock);
+        console.log(`[SemanticRepair] Attempt 1 ✅ repaired ${targetPath}`);
+      }
+    } catch (err) {
+      console.warn(`[SemanticRepair] Attempt 1 failed for ${targetPath}:`, err.message);
+    }
+  }
+
+  return attempt1Result;
 }
 
 // ── Full quality pass ─────────────────────────────────────────────
@@ -472,44 +517,117 @@ Return ONLY the corrected complete HTML file — no markdown fences, no commenta
  * @returns {Promise<string>}     Audited (and possibly repaired) response
  */
 async function fullQualityPass(generatedText, requirements, apiKey) {
-  // Step 1 — semantic audit
-  const audit = await semanticAudit(generatedText, requirements, apiKey);
-  console.log(
-    `[SemanticAudit] ${audit.passed ? '✅ PASS' : `❌ FAIL — ${audit.issues.length} issue(s): ${audit.issues.slice(0, 2).join(' | ')}`}`
-  );
 
-  if (audit.passed || audit.issues.length === 0) return generatedText;
+  // ── Audit 1 ───────────────────────────────────────────────────────
+  const audit1 = await semanticAudit(generatedText, requirements, apiKey);
+  console.log(`[SemanticAudit] ${audit1.passed ? '✅ PASS' : `❌ FAIL — ${audit1.issues.length} issue(s): ${audit1.issues.slice(0,2).join(' | ')}`}`);
+  if (audit1.passed) return generatedText;
 
-  // Step 2 — only attempt repair when a Gemini stream slot is actually free.
-  // If all slots are cooling the repair call would silently block for ~60 s before
-  // giving up anyway — skip it and return the original output immediately.
-  if (!geminiStreamAvailable()) {
-    console.warn('[SemanticRepair] No free Gemini stream slots — skipping repair to avoid blocking');
-    return generatedText;
-  }
-
-  console.log('[SemanticRepair] Repairing…');
-
-  // Wrap repair + re-audit in a hard timeout so a slow/stuck Gemini call never
-  // leaves the response stream silent for longer than REPAIR_TIMEOUT_MS.
-  let repaired;
+  // ── Attempt 1: Targeted file repair ──────────────────────────────
+  let afterAttempt1 = generatedText;
   try {
-    repaired = await Promise.race([
-      semanticRepair(generatedText, audit.issues, requirements, apiKey),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('repair timeout')), REPAIR_TIMEOUT_MS)
-      ),
-    ]);
+    afterAttempt1 = await semanticRepair(generatedText, audit1.issues, requirements, apiKey);
   } catch (err) {
-    console.warn(`[SemanticRepair] Skipped — ${err.message}`);
-    return generatedText;
+    if (err.code === 'NEEDS_REGENERATION') throw err;
+    console.warn('[SemanticRepair] Attempt 1 non-fatal:', err.message);
   }
 
-  // Step 3 — re-audit to confirm fix
-  const reAudit = await semanticAudit(repaired, requirements, apiKey);
-  console.log(`[SemanticAudit] Re-audit: ${reAudit.passed ? '✅ PASS' : '⚠️  issues remain (proceeding with best effort)'}`);
+  const audit2 = await semanticAudit(afterAttempt1, requirements, apiKey);
+  console.log(`[SemanticAudit] After attempt 1: ${audit2.passed ? '✅ PASS' : `❌ FAIL — ${audit2.issues.slice(0,2).join(' | ')}`}`);
+  if (audit2.passed) return afterAttempt1;
 
-  return repaired; // return repaired regardless — always better than original
+  // ── Attempt 2: Full regeneration with compact prompt ─────────────
+  console.log('[SemanticRepair] Attempt 2 — full regeneration with compact prompt');
+  let afterAttempt2 = afterAttempt1;
+  try {
+    let regenResult = '';
+    await geminiPool.pooledStream({
+      contents: [{
+        role: 'user',
+        parts: [{ text:
+`REGENERATE this application from scratch. Previous attempt had issues.
+
+ISSUES TO FIX:
+${audit2.issues.map(i => `• ${i}`).join('\n')}
+
+REQUIREMENTS:
+${requirements.slice(0, 2000)}
+
+RULES:
+• React JSX MUST be inline in <script type="text/babel"> — NEVER src= attribute
+• CDN URLs MUST be exactly:
+  https://unpkg.com/react@18/umd/react.development.js
+  https://unpkg.com/react-dom@18/umd/react-dom.development.js
+  https://unpkg.com/babel-standalone@7/babel.min.js
+• API calls: fetch('/api/route') — NEVER hardcoded localhost
+• Implement core features only — do NOT pad with extras
+• Every code block MUST be complete with closing fence
+
+Start with REPO_NAME: then output all files completely.`
+        }]
+      }],
+      config:            { temperature: 0.3, maxOutputTokens: 32768 },
+      apiKey,
+      systemInstruction: '',
+      onChunk: () => {},
+      onDone:  (text) => { regenResult = text; },
+    });
+    if (regenResult && regenResult.length > 200) {
+      afterAttempt2 = regenResult;
+      console.log('[SemanticRepair] Attempt 2 ✅ regeneration complete');
+    }
+  } catch (err) {
+    console.warn('[SemanticRepair] Attempt 2 failed:', err.message);
+  }
+
+  const audit3 = await semanticAudit(afterAttempt2, requirements, apiKey);
+  console.log(`[SemanticAudit] After attempt 2: ${audit3.passed ? '✅ PASS' : `❌ FAIL — ${audit3.issues.slice(0,2).join(' | ')}`}`);
+  if (audit3.passed) return afterAttempt2;
+
+  // ── Attempt 3: Senior developer diagnosis ─────────────────────────
+  // Reads spec + broken output side by side, diagnoses root cause,
+  // generates targeted fix — different from attempt 2 (reasons first)
+  console.log('[SemanticRepair] Attempt 3 — senior developer diagnosis');
+  let afterAttempt3 = afterAttempt2;
+  try {
+    const diagnosisPrompt =
+`You are a senior full-stack developer doing a code review.
+
+SPECIFICATION:
+${requirements.slice(0, 1500)}
+
+REMAINING ISSUES after 2 repair attempts:
+${audit3.issues.map(i => `• ${i}`).join('\n')}
+
+CURRENT OUTPUT (excerpt):
+${afterAttempt2.slice(0, 3000)}
+
+Think through WHY each issue exists, then fix ALL of them.
+Return the complete corrected output with all files.
+Start with REPO_NAME: then output all files.`;
+
+    let diagResult = '';
+    await geminiPool.pooledStream({
+      contents: [{ role: 'user', parts: [{ text: diagnosisPrompt }] }],
+      config:   { temperature: 0.2, maxOutputTokens: 32768 },
+      apiKey,
+      systemInstruction: '',
+      onChunk: () => {},
+      onDone:  (text) => { diagResult = text; },
+    });
+    if (diagResult && diagResult.length > 200) {
+      afterAttempt3 = diagResult;
+      console.log('[SemanticRepair] Attempt 3 ✅ diagnosis complete');
+    }
+  } catch (err) {
+    console.warn('[SemanticRepair] Attempt 3 failed:', err.message);
+  }
+
+  const audit4 = await semanticAudit(afterAttempt3, requirements, apiKey);
+  console.log(`[SemanticAudit] After attempt 3: ${audit4.passed ? '✅ PASS' : '⚠️ issues remain — deploying best version'}`);
+
+  // Always return best version — never deploy original broken output
+  return afterAttempt3;
 }
 
 module.exports = {

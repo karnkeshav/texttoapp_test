@@ -12,6 +12,7 @@ const { pooledStream } = require('./geminiPool');
 const { groqStream }       = require('./groqPool');
 const { cerebrasStream }   = require('./cerebrasPool');
 const { sambanovaStream }  = require('./sambanovaPool');
+const { isStreamTruncated } = require('./truncationDetector');
 
 // ── Circuit breaker (module-level — shared across all requests) ───
 // When Antigravity returns 429 the breaker "trips" and all subsequent
@@ -406,8 +407,8 @@ func main() {
 </head>
 <body>
 	<div id="root"></div>
-	<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+	<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 	<script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>
 	<script type="text/babel">
 		const { useState } = React;
@@ -478,8 +479,8 @@ Flask==2.3.0
 </head>
 <body>
 	<div id="root"></div>
-	<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+	<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 	<script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>
 	<script type="text/babel">
 		const { useState } = React;
