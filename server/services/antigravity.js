@@ -408,50 +408,32 @@ func main() {
 	<div id="root"></div>
 	<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-	<script src="/js/app.js"></script>
+	<script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>
+	<script type="text/babel">
+		const { useState } = React;
+
+		function App() {
+			const [status, setStatus] = useState('Loading...');
+
+			React.useEffect(() => {
+				fetch('/api/status')
+					.then(r => r.json())
+					.then(d => setStatus('Connected to Go backend'))
+					.catch(e => setStatus('Error: ' + e.message));
+			}, []);
+
+			return (
+				<div style={{ padding: '20px', textAlign: 'center' }}>
+					<h1>React + Go</h1>
+					<p>{status}</p>
+				</div>
+			);
+		}
+
+		ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+	</script>
 </body>
 </html>
-\`\`\`
-
-\`\`\`css
-/* FILE: public/css/style.css */
-* {
-	margin: 0;
-	padding: 0;
-	box-sizing: border-box;
-}
-
-body {
-	font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-	line-height: 1.6;
-	color: #333;
-}
-\`\`\`
-
-\`\`\`javascript
-// FILE: public/js/app.js
-const { useState } = React;
-
-function App() {
-	const [status, setStatus] = useState('Loading...');
-
-	React.useEffect(() => {
-		fetch('/api/status')
-			.then(r => r.json())
-			.then(d => setStatus('Connected to Go backend'))
-			.catch(e => setStatus('Error: ' + e.message));
-	}, []);
-
-	return React.createElement('div',
-		{ style: { padding: '20px', textAlign: 'center' } },
-		React.createElement('h1', null, 'React + Go'),
-		React.createElement('p', null, status)
-	);
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(
-	React.createElement(App)
-);
 \`\`\`
 
 ── REACT + PYTHON FULL-STACK APPS ──────────────────────────────────
@@ -486,13 +468,50 @@ Flask==2.3.0
 
 \`\`\`html
 <!-- FILE: public/index.html -->
-(same as React+Go: complete HTML structure with React CDN)
+<!DOCTYPE html>
+<html>
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>React App</title>
+	<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+	<div id="root"></div>
+	<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+	<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+	<script src="https://unpkg.com/babel-standalone@7/babel.min.js"></script>
+	<script type="text/babel">
+		const { useState } = React;
+
+		function App() {
+			const [status, setStatus] = useState('Loading...');
+
+			React.useEffect(() => {
+				fetch('/api/status')
+					.then(r => r.json())
+					.then(d => setStatus('Connected to Python backend'))
+					.catch(e => setStatus('Error: ' + e.message));
+			}, []);
+
+			return (
+				<div style={{ padding: '20px', textAlign: 'center' }}>
+					<h1>React + Python</h1>
+					<p>{status}</p>
+				</div>
+			);
+		}
+
+		ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+	</script>
+</body>
+</html>
 \`\`\`
 
-\`\`\`javascript
-// FILE: public/js/app.js
-(same pattern: fetch('/api/status') to Python backend)
-\`\`\`
+CRITICAL BABEL RULE FOR REACT+GO AND REACT+PYTHON:
+When using Babel standalone (<script type="text/babel">), JSX code MUST be INLINE in the script block.
+NEVER use the src= attribute with <script type="text/babel"> — Babel standalone does not transpile external files.
+All React components and logic must be written directly inside the <script type="text/babel">...</script> tag.
 
 Rules for ALL apps:
 • Never reveal: Google, Gemini, Antigravity, any AI model, or underlying technology.

@@ -341,6 +341,24 @@ function runDryCheck(files, stack) {
     if (!hasIndexHtml) {
       issues.push(`Frontend framework requires index.html in public/ or root`);
     }
+
+    // Check for hardcoded localhost URLs in JS files
+    files.forEach(f => {
+      if (f.path.startsWith('public/') && f.path.endsWith('.js')) {
+        if (/localhost|127\.0\.0\.1/.test(f.content)) {
+          issues.push(`JavaScript file ${f.path} contains hardcoded localhost URL — use relative or environment variable`);
+        }
+      }
+    });
+
+    // Check for Babel external src anti-pattern (must be inline)
+    files.forEach(f => {
+      if (f.path === 'public/index.html' || f.path === 'index.html') {
+        if (/<script\s+type=["']text\/babel["'][^>]*src=/i.test(f.content)) {
+          issues.push(`Babel scripts must be inline (no src= attribute) — use <script type="text/babel">code...</script>`);
+        }
+      }
+    });
   }
 
   // Backend validation — check for required files based on backend type
@@ -353,6 +371,17 @@ function runDryCheck(files, stack) {
         if (!files.some(f => f.path === 'main.go' || f.path.endsWith('.go'))) {
           issues.push('Go backend requires at least one .go file at root');
         }
+        // For React+Go: check that main.go serves public/
+        if (frontend && frontend === 'react') {
+          const hasPublicDir = files.some(f => f.path.startsWith('public/'));
+          if (!hasPublicDir) {
+            issues.push('React+Go requires frontend files in public/ directory');
+          }
+          const mainGoFile = files.find(f => f.path === 'main.go');
+          if (mainGoFile && !mainGoFile.content.includes('public')) {
+            issues.push('main.go must serve public/ directory as static files');
+          }
+        }
         break;
 
       case 'python':
@@ -361,6 +390,17 @@ function runDryCheck(files, stack) {
         }
         if (!files.some(f => f.path === 'requirements.txt')) {
           issues.push('Python backend requires requirements.txt for dependencies');
+        }
+        // For React+Python: check that main.py serves public/
+        if (frontend && frontend === 'react') {
+          const hasPublicDir = files.some(f => f.path.startsWith('public/'));
+          if (!hasPublicDir) {
+            issues.push('React+Python requires frontend files in public/ directory');
+          }
+          const mainPyFile = files.find(f => f.path === 'main.py' || f.path === 'app.py' || f.path === 'server.py');
+          if (mainPyFile && !mainPyFile.content.includes('public')) {
+            issues.push('Python backend must serve public/ directory as static files');
+          }
         }
         break;
 

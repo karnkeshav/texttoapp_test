@@ -6,7 +6,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 
-// Use home directory instead of temp directory
+// Use home directory instead of temp directory to avoid PowerShell execution policy blocks
 const APPS_ROOT = path.join(os.homedir(), 'ready4launch-apps');
 
 const runningApps = new Map();
@@ -15,82 +15,104 @@ function needsLocalRunner(files) {
   return files.some(f =>
     f.path === 'package.json' || f.path.endsWith('/package.json') ||
     f.path === 'go.mod' || f.path.endsWith('.go') ||
-    f.path === 'requirements.txt' || f.path.endsWith('.py')
+    f.path === 'requirements.txt' || f.path.endsWith('.py') ||
+    f.path === 'Gemfile' || f.path === 'Cargo.toml'
   );
 }
 
-function isBackendApp(files) {
-  const hasNode = files.some(f => f.path === 'package.json' || f.path.endsWith('/package.json'));
-  const hasGo = files.some(f => f.path === 'go.mod' || f.path === 'main.go');
-  const hasPython = files.some(f => ['requirements.txt', 'main.py', 'app.py', 'server.py'].includes(f.path));
-  return hasNode || hasGo || hasPython;
-}
-
-function getRunInfo(files) {
-  const hasNode = files.some(f => f.path === 'package.json');
-  const hasGo = files.some(f => f.path === 'go.mod' || f.path === 'main.go');
-  const hasPython = files.some(f => f.path === 'requirements.txt');
-
-  if (hasNode) return { cmd: 'npm start', type: 'nodejs', defaultPort: 3000 };
-  if (hasGo) return { cmd: 'go run .', type: 'go', defaultPort: 8080 };
-  if (hasPython) return { cmd: 'python main.py', type: 'python', defaultPort: 5000 };
-  return null;
-}
-
-async function findFreePort(startPort) {
-  return new Promise((resolve) => {
-    const server = net.createServer();
-    server.listen(startPort, () => {
-      const { port } = server.address();
-      server.close(() => resolve(port));
-    });
-    server.on('error', () => resolve(findFreePort(startPort + 1)));
-  });
-}
-
-function saveFiles(appDir, files) {
-  if (fs.existsSync(appDir)) {
-    fs.rmSync(appDir, { recursive: true, force: true });
+function stackNeedsLocalRunner(stack) {
+  const { backend } = stack || {};
+  if (!backend || backend === 'none' || backend === 'html') {
+    return false;
   }
-  fs.mkdirSync(appDir, { recursive: true });
-
-  for (const { path: filePath, content } of files) {
-    const fullPath = path.join(appDir, filePath);
-    fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-    fs.writeFileSync(fullPath, content, 'utf8');
-  }
+  return ['go', 'python', 'nodejs', 'ruby', 'php', 'rust'].includes(backend.toLowerCase());
 }
 
-function stopApp(repoName) {
-  const existing = runningApps.get(repoName);
-  if (existing?.process) {
+async function waitForPort(port, maxWaitSeconds = 45) {
+  const startTime = Date.now();
+  const maxWaitMs = maxWaitSeconds * 1000;
+
+  while (Date.now() - startTime < maxWaitMs) {
     try {
-      if (process.platform === 'win32') {
-        execSync(`taskkill /PID ${existing.process.pid} /T /F`, { stdio: 'ignore' });
-      } else {
-        existing.process.kill('SIGTERM');
-      }
-    } catch (_) {}
-    runningApps.delete(repoName);
+      const socket = new net.Socket();
+      socket.setTimeout(1000);
+
+      return new Promise((resolve, reject) => {
+        socket.once('connect', () => {
+          socket.destroy();
+          resolve(true);
+        });
+
+        socket.once('timeout', () => {
+          socket.destroy();
+          reject(new Error('Timeout'));
+        });
+
+        socket.once('error', (err) => {
+          reject(err);
+        });
+
+        socket.connect(port, 'localhost');
+      }).catch((err) => {
+        // Port not ready yet, continue polling
+        return false;
+      });
+    } catch (err) {
+      // Continue polling
+    }
+
+    // Wait 500ms before retrying
+    await new Promise(r => setTimeout(r, 500));
   }
+
+  throw new Error(`Port ${port} did not respond after ${maxWaitSeconds} seconds`);
 }
 
-// NOTE: This is NOT called from /deploy anymore
-// Only called from /api/run-local after git clone
-async function runApp(repoName, clonedRepoPath) {
-  const appDir = path.join(APPS_ROOT, repoName);
+async function cloneAndRun(cloneUrl, repoName, stack) {
+  // Create apps directory if it doesn't exist
+  if (!fs.existsSync(APPS_ROOT)) {
+    fs.mkdirSync(APPS_ROOT, { recursive: true });
+  }
 
-  // Files already in clonedRepoPath, just set up and run
-  const port = await findFreePort(3000);
+  const repoPath = path.join(APPS_ROOT, repoName);
 
-  stopApp(repoName);
+  // Remove existing clone if it exists
+  if (fs.existsSync(repoPath)) {
+    fs.rmSync(repoPath, { recursive: true, force: true });
+  }
 
-  console.log(`[AppRunner] Starting ${repoName} at ${appDir}:${port}…`);
+  console.log(`[AppRunner] Cloning ${cloneUrl} to ${repoPath}…`);
+
+  try {
+    // Clone the repository
+    execSync(`git clone ${cloneUrl} "${repoPath}"`, { stdio: 'pipe' });
+  } catch (err) {
+    console.error('[AppRunner] Clone failed:', err.message);
+    throw new Error(`Failed to clone repository: ${err.message}`);
+  }
+
+  // Determine backend port
+  const defaultPorts = {
+    'go': 8080,
+    'python': 5000,
+    'nodejs': 3000,
+    'ruby': 3000,
+    'php': 8000,
+    'rust': 8000
+  };
+
+  const { backend } = stack || {};
+  let port = defaultPorts[backend?.toLowerCase()] || 3000;
+
+  // Find a free port
+  port = await findFreePort(port);
+
+  console.log(`[AppRunner] Starting ${repoName} on port ${port}…`);
 
   try {
     if (process.platform === 'win32') {
       const ps1 = [
-        `Set-Location -Path '${appDir}'`,
+        `Set-Location -Path '${repoPath}'`,
         `${'$'}env:PORT = '${port}'`,
         `Write-Host "[AppRunner] Starting server on port ${port}..." -ForegroundColor Cyan`,
         `& .\\start.ps1 -NoOpen`
@@ -111,24 +133,56 @@ async function runApp(repoName, clonedRepoPath) {
       });
 
       child.unref();
-      runningApps.set(repoName, { port, process: child });
+      runningApps.set(repoName, { port, process: child, repoPath });
     } else {
-      const cmd = `cd '${appDir}' && export PORT=${port} && ./start.ps1`;
+      const cmd = `cd '${repoPath}' && export PORT=${port} && bash start.ps1`;
       const child = spawn('bash', ['-c', cmd], { detached: true, stdio: 'ignore' });
       child.on('error', (err) => {
         console.error('[AppRunner] Terminal spawn error:', err);
       });
       child.unref();
-      runningApps.set(repoName, { port, process: child });
+      runningApps.set(repoName, { port, process: child, repoPath });
     }
   } catch (err) {
     console.error('[AppRunner] Critical error launching app:', err);
+    throw err;
   }
 
-  await new Promise(r => setTimeout(r, 2000));
+  // Wait for server to be ready
+  try {
+    await waitForPort(port, 45);
+  } catch (err) {
+    console.warn(`[AppRunner] Server did not respond within timeout: ${err.message}`);
+  }
+
   const localUrl = `http://localhost:${port}`;
   console.log(`[AppRunner] ${repoName} running at ${localUrl}`);
   return localUrl;
 }
 
-module.exports = { runApp, needsLocalRunner, isBackendApp, getRunInfo };
+async function findFreePort(startPort) {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(startPort, () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+    server.on('error', () => resolve(findFreePort(startPort + 1)));
+  });
+}
+
+function stopApp(repoName) {
+  const existing = runningApps.get(repoName);
+  if (existing?.process) {
+    try {
+      if (process.platform === 'win32') {
+        execSync(`taskkill /PID ${existing.process.pid} /T /F`, { stdio: 'ignore' });
+      } else {
+        existing.process.kill('SIGTERM');
+      }
+    } catch (_) {}
+    runningApps.delete(repoName);
+  }
+}
+
+module.exports = { cloneAndRun, needsLocalRunner, stackNeedsLocalRunner, stopApp };

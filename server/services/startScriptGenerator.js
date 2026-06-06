@@ -64,30 +64,12 @@ function Get-FreePort {
   return ${'\$'}preferred
 }
 
-# [1/3] Install backend dependencies
-Write-Host "[1/3] Installing backend dependencies..." -ForegroundColor Yellow
+# [1/2] Install backend dependencies
+Write-Host "[1/2] Installing backend dependencies..." -ForegroundColor Yellow
 ${backendInstallCmd}
 
-# [2/3] Install frontend dependencies if needed
-Write-Host "[2/3] Checking frontend..." -ForegroundColor Yellow
-if (Test-Path "public/package.json") {
-  if (-not (Test-Command "node")) {
-    Write-Host "ERROR: Node.js is required for frontend" -ForegroundColor Red
-    Write-Host "Download from: https://nodejs.org" -ForegroundColor Gray
-    exit 1
-  }
-  Write-Host "      Installing frontend dependencies..." -ForegroundColor Gray
-  Push-Location public
-  & npm install
-  if (${'\$'}LASTEXITCODE -ne 0) {
-    Write-Host "ERROR: npm install failed" -ForegroundColor Red
-    exit 1
-  }
-  Pop-Location
-}
-
-# [3/3] Start backend server
-Write-Host "[3/3] Starting backend server..." -ForegroundColor Yellow
+# [2/2] Start backend server
+Write-Host "[2/2] Starting backend server..." -ForegroundColor Yellow
 ${'\$'}backendPort = Get-FreePort ${backendPort}
 ${'\$'}env:PORT = ${'\$'}backendPort
 

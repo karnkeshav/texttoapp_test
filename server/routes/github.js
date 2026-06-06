@@ -1,7 +1,7 @@
 const express = require('express');
 const { listRepos, createRepo, pushFiles, enablePages } = require('../services/githubService');
 const { auditAndHeal } = require('../services/codeQuality');
-const { needsLocalRunner, isBackendApp } = require('../services/appRunner');
+const { needsLocalRunner, isBackendApp, cloneAndRun, stackNeedsLocalRunner } = require('../services/appRunner');
 
 const router = express.Router();
 
@@ -130,6 +130,26 @@ router.post('/deploy', requireAuth, async (req, res) => {
       console.error('Deploy error:', err.message);
       res.status(500).json({ error: err.message });
     }
+  }
+});
+
+router.post('/run-local', requireAuth, async (req, res) => {
+  const { cloneUrl, repoName, stack } = req.body;
+
+  if (!cloneUrl || !repoName) {
+    return res.status(400).json({ error: 'cloneUrl and repoName are required' });
+  }
+
+  try {
+    const localUrl = await cloneAndRun(cloneUrl, repoName, stack);
+    res.json({
+      success: true,
+      localUrl,
+      repoName
+    });
+  } catch (err) {
+    console.error('Run local error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

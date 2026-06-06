@@ -234,7 +234,7 @@ ${code}`;
     config:   { temperature: 0.1, maxOutputTokens: 8192 },
     apiKey,
   });
-  const fenced = text.match(/```(?:html)?\s*([\s\S]*?)```/i);
+  const fenced = text.match(/```(?:html|go|python|py|ruby|rb|rust|rs|php)?\s*([\s\S]*?)```/i);
   return fenced ? fenced[1].trim() : text.trim();
 }
 
@@ -371,7 +371,7 @@ async function semanticRepair(generatedText, issues, requirements, apiKey) {
   // Multi-file output: more than one code block (html + css + js).
   // We can't safely repair and reconstruct without losing the other files,
   // so skip the repair step and return the original.
-  const codeBlockCount = (generatedText.match(/```(?:html|css|javascript|js)\b/gi) || []).length;
+  const codeBlockCount = (generatedText.match(/```(?:html|css|javascript|js|go|python|py|ruby|rb|rust|rs|php|toml|mod)\b/gi) || []).length;
   if (codeBlockCount > 1) {
     console.warn('[SemanticRepair] Multi-file output detected — skipping repair to preserve file structure');
     return generatedText;
@@ -400,7 +400,7 @@ Return ONLY the corrected complete HTML file — no markdown fences, no commenta
 
   let repairedHtml = '';
   try {
-    await geminiPool.pooledStream({
+    await geminiPool.cascadeStream({
       contents:          [{ role: 'user', parts: [{ text: repairPrompt }] }],
       config:            { temperature: 0.2, maxOutputTokens: 32768 },
       apiKey,
@@ -409,7 +409,7 @@ Return ONLY the corrected complete HTML file — no markdown fences, no commenta
       onDone:  (text) => { repairedHtml = text; },
     });
   } catch (err) {
-    console.warn('[SemanticRepair] pooledStream failed:', err.message);
+    console.warn('[SemanticRepair] cascadeStream failed:', err.message);
     return generatedText; // return original on error
   }
 

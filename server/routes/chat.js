@@ -1460,8 +1460,8 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     let outputGateError = null;
     const onDone = (fullText) => {
       const announcedCode = /REPO_NAME\s*:/i.test(fullText);
-      const hasHtmlBlock  = /```html/i.test(fullText);
-      if (announcedCode && !hasHtmlBlock) {
+      const hasCodeBlock = /```(?:html|go|python|py|ruby|rb|rust|rs|php|json)/i.test(fullText);
+      if (announcedCode && !hasCodeBlock) {
         console.warn('[Chat] Output gate: REPO_NAME without ```html — rejecting');
         outputGateError = 'Ready4Launch generated an incomplete response. Please try again.';
         return;
@@ -1632,6 +1632,8 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
           }
         } catch (dryErr) {
           console.warn('[DryRun] Error during retry:', dryErr.message);
+          // Do not update finalText — keep last known good version
+          dryRunAttempt = MAX_DRY_RUN_RETRIES; // force exit
           break;
         }
       }
@@ -1653,7 +1655,8 @@ NOW: Regenerate the ENTIRE corrected application with ALL files complete and val
       // Flag the frontend explicitly when this is a build response.
       // This lets the client show the deploy button even if its own
       // regex-parsing of the large HTML payload fails.
-      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) || /```html/i.test(finalText) || /```json/i.test(finalText);
+      const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) ||
+        /```(?:html|json|go|python|py|ruby|rb|rust|rs|php)/i.test(finalText);
       if (hasBuildOutput) {
         donePayload.build = true;
         // Also extract REPO_NAME server-side as a reliable fallback
