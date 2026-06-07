@@ -28,6 +28,21 @@ function stackNeedsLocalRunner(stack) {
   return ['go', 'python', 'nodejs', 'ruby', 'php', 'rust'].includes(backend.toLowerCase());
 }
 
+// Check if the audited files include backend app files
+function isBackendApp(files) {
+  if (!files || !Array.isArray(files)) return false;
+  const backendPatterns = ['package.json', 'go.mod', 'requirements.txt', 'main.py', 'Gemfile', 'Cargo.toml', 'composer.json'];
+  return files.some(f => {
+    const fileName = f.path?.split('/').pop() || f.path || '';
+    return backendPatterns.includes(fileName) ||
+           fileName.endsWith('.go') ||
+           fileName.endsWith('.py') ||
+           fileName.endsWith('.rb') ||
+           fileName.endsWith('.rs') ||
+           fileName.endsWith('.php');
+  });
+}
+
 async function waitForPort(port, maxWaitSeconds = 45) {
   const startTime = Date.now();
   const maxWaitMs = maxWaitSeconds * 1000;
@@ -185,4 +200,4 @@ function stopApp(repoName) {
   }
 }
 
-module.exports = { cloneAndRun, needsLocalRunner, stackNeedsLocalRunner, stopApp };
+module.exports = { cloneAndRun, needsLocalRunner, stackNeedsLocalRunner, stopApp, isBackendApp };

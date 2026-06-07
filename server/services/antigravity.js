@@ -717,11 +717,16 @@ function buildContents(history, newUserMessage) {
 // ── Build enriched contents for fallback pools ────────────────────
 // Mirrors the contextualMessage logic inside streamFromGeminiPool so
 // Groq/Cerebras/SambaNova receive the same plan-context enrichment.
-// Strip code blocks from history to keep token count manageable.
+// Strip code blocks from history + truncate enrichedNotes to keep token count manageable.
 function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
   let msg = newUserMessage;
   if (enrichedNotes && enrichedNotes !== 'No additional context.') {
-    msg = `── PLAN CONTEXT ──\n${enrichedNotes}\n──────────────────\n\n${newUserMessage}`;
+    // Truncate enrichedNotes to first 2000 chars (~500 tokens max)
+    // to prevent bloating the request when sent to fallback pools
+    const truncatedNotes = enrichedNotes.length > 2000
+      ? enrichedNotes.slice(0, 2000) + '\n[...truncated for space...]'
+      : enrichedNotes;
+    msg = `── PLAN CONTEXT ──\n${truncatedNotes}\n──────────────────\n\n${newUserMessage}`;
   }
   return buildContents(stripCodeFromHistory(history), msg);
 }
