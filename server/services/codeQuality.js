@@ -223,7 +223,7 @@ function checkMetaTags(html) {
 }
 
 // ── Repair pass ───────────────────────────────────────────────────
-async function runRepairPass(code, errors, apiKey) {
+async function runRepairPass(code, errors, apiKey, requirements = '') {
   // If unclosed tags exist AND file has Babel script block,
   // the real issue is truncated JSX — repair cannot help
   const hasBabelScript = /<script[^>]+type\s*=\s*["']text\/babel["']/i.test(code);
@@ -249,6 +249,7 @@ No explanations, no markdown fences, no commentary.
 
 ISSUES:
 ${errors.map(e => `• ${e}`).join('\n')}
+${requirements ? `\nAPP CONTEXT (what this app does):\n${requirements.slice(0, 500)}\n` : ''}
 
 HTML:
 ${codeToSend}`;
@@ -292,7 +293,7 @@ function runAllChecks(html) {
  * @param {string} model    Gemini model for repair calls
  * @returns {{ code: string, healed: boolean, attempts: number }}
  */
-async function auditAndHeal(code, apiKey, model) {
+async function auditAndHeal(code, apiKey, model, requirements = '') {
   let current = code;
 
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -306,7 +307,7 @@ async function auditAndHeal(code, apiKey, model) {
       `[CodeAudit] Attempt ${attempt + 1}/2 — ${errors.length} issue(s): ` +
       errors.slice(0, 3).join(' | ')
     );
-    current = await runRepairPass(current, errors, apiKey, model);
+    current = await runRepairPass(current, errors, apiKey, requirements);
   }
 
   // Final verification after all repair attempts

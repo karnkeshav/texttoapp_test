@@ -28,6 +28,7 @@ const { pooledStream, pooledGenerate } = require('../services/geminiPool');
 const { checkGate, quickSection } = require('../middleware/packageGate');
 const { recordSession } = require('../services/firestoreService');
 const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } = require('../services/stackAdvisor');
+const { compileBrief } = require('../services/briefCompiler');
 
 const router = express.Router();
 
@@ -576,6 +577,7 @@ router.post('/chat', requireAuth, async (req, res) => {
   if ((newConversation || !req.session.chatHistory) && !isInActiveEditSession) {
     req.session.chatHistory      = [];
     req.session.planNotes        = '';
+    req.session.buildBrief       = '';  // semantic brief — set after Phase 1
     req.session.buildMode        = null;   // 'prototype' | 'complete'
     req.session.chatPhase        = 'init'; // see phases above
     req.session.questionIndex    = 0;
@@ -1469,15 +1471,48 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       capturedText = fullText;
     };
 
+    // ── PHASE 1: Compile semantic brief ──────────────────────────────
+    // Compresses full history to ~200 token brief using cheap model.
+    // Brief stored in session so EVERY downstream phase can use it.
+    // Input drops from ~40,000 tokens to ~4,500 tokens for Phase 2.
+    sendEvent('status', { message: 'Analysing your requirements…' });
+
+    const shouldCompile =
+      req.session.buildMode === 'complete' ||
+      (req.session.buildMode === 'prototype' && history.length >= 4) ||
+      (req.session.chatPhase === 'building' && history.length >= 4);
+
+    if (shouldCompile && !req.session.buildBrief) {
+      try {
+        const { brief, modelHint } = await compileBrief(
+          history,
+          enrichedNotes,
+          req.session.selectedStack,
+          apiKey
+        );
+        req.session.buildBrief = brief;
+        console.log('[Chat] ✅ Phase 1 complete — brief stored in session');
+        console.log(`[Chat] Brief preview: ${brief.slice(0, 120)}...`);
+      } catch (briefErr) {
+        console.warn('[Chat] Brief compilation failed (non-fatal):', briefErr.message);
+        req.session.buildBrief = enrichedNotes; // fallback
+      }
+    }
+
+    // Use brief if available, otherwise fall back to enrichedNotes
+    const activeBrief = req.session.buildBrief || enrichedNotes;
+
+    // ── PHASE 2: Generate code with large model ───────────────────────
+    // Pass brief as enrichedNotes — large model has 27,000+ tokens for output.
+    // Pass empty history — brief contains everything the model needs.
     sendEvent('status', { message: 'Ready4Launch is building your app…' });
     await antigravity.streamChat(
       processedMessage,
-      historyToSend,
+      [],           // no history — brief has everything
       null,
       onChunk,
       onDone,
-      enrichedNotes,
-      'build'  // ← highest token models for code generation
+      activeBrief   // brief replaces raw enrichedNotes
     );
 
     // Handle output gate / missing response
@@ -1496,7 +1531,7 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     if (/```html/i.test(capturedText) && enrichedNotes && enrichedNotes.length > 30) {
       try {
         sendEvent('status', { message: 'Verifying build quality…' });
-        finalText = await fullQualityPass(capturedText, enrichedNotes, apiKey);
+        finalText = await fullQualityPass(capturedText, req.session.buildBrief || enrichedNotes, apiKey);
         if (finalText !== capturedText) {
           sendEvent('status', { message: 'Self-heal complete ✓' });
         }
@@ -1560,7 +1595,7 @@ ERRORS TO FIX:
 ${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
 
 REQUIREMENTS (implement these exactly):
-${enrichedNotes.slice(0, 2000)}
+${activeBrief.slice(0, 2000)}
 
 CRITICAL RULES:
 • React JSX MUST be inline in <script type="text/babel"> — NEVER src= attribute

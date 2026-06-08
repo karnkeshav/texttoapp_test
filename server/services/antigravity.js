@@ -660,12 +660,12 @@ function stripCodeFromHistory(history) {
     const content = turn.content || '';
     // Remove all code blocks — they are huge and not needed in history
     const stripped = content
-      .replace(/```[\s\S]*?```/g, '[code block removed]')
+      .replace(/```[\s\S]*?```/gs, '[code block removed]')
       .replace(/REPO_NAME:\s*[^\n]+/g, '')
       .trim();
     // If the entire turn was just code, skip it
     if (stripped.length < 10) return null;
-    return { ...turn, content: stripped };
+    return { ...turn, content: stripped.slice(0, 600) };
   }).filter(Boolean);
 }
 

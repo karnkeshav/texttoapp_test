@@ -76,7 +76,12 @@ router.post('/deploy', requireAuth, async (req, res) => {
     const auditedFiles = await Promise.all(files.map(async (file) => {
       if (!file.path.endsWith('.html')) return file;
       try {
-        const { code, healed, attempts } = await auditAndHeal(file.content, apiKey, model);
+        const { code, healed, attempts } = await auditAndHeal(
+          file.content,
+          apiKey,
+          model,
+          req.session?.buildBrief || ''  // semantic brief flows into code audit
+        );
         if (healed) console.log(`[CodeAudit] Healed ${file.path} in ${attempts} attempt(s)`);
         return { ...file, content: code };
       } catch (auditErr) {
