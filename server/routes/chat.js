@@ -1477,6 +1477,9 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     // Input drops from ~40,000 tokens to ~4,500 tokens for Phase 2.
     sendEvent('status', { message: 'Analysing your requirements…' });
 
+    let buildBrief   = enrichedNotes;
+    let buildHistory = historyToSend;
+
     const shouldCompile =
       req.session.buildMode === 'complete' ||
       (req.session.buildMode === 'prototype' && history.length >= 4) ||
@@ -1491,6 +1494,8 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
           apiKey
         );
         req.session.buildBrief = brief;
+        buildBrief   = brief;
+        buildHistory = [];  // brief contains everything — history not needed
         console.log('[Chat] ✅ Phase 1 complete — brief stored in session');
         console.log(`[Chat] Brief preview: ${brief.slice(0, 120)}...`);
       } catch (briefErr) {
@@ -1506,14 +1511,15 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     // Pass brief as enrichedNotes — large model has 27,000+ tokens for output.
     // Pass empty history — brief contains everything the model needs.
     sendEvent('status', { message: 'Ready4Launch is building your app…' });
-    await antigravity.streamChat(
+  await antigravity.streamChat(
       processedMessage,
-      [],           // no history — brief has everything
+      buildHistory,     // [] — brief has everything
       null,
       onChunk,
       onDone,
-      activeBrief   // brief replaces raw enrichedNotes
-    );
+      activeBrief, 
+      'build'// semantic brief replaces enrichedNotes
+  );
 
     // Handle output gate / missing response
     if (outputGateError) {
