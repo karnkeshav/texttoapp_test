@@ -107,10 +107,25 @@ async function waitForPort(port, maxWaitSeconds = 45) {
 async function cloneAndRun(cloneUrl, repoName, stack) {
   if (!fs.existsSync(APPS_ROOT)) fs.mkdirSync(APPS_ROOT, { recursive: true });
   const repoPath = path.join(APPS_ROOT, repoName);
-  if (fs.existsSync(repoPath)) fs.rmSync(repoPath, { recursive: true, force: true });
 
-  console.log(`[AppRunner] Cloning ${cloneUrl}…`);
-  execSync(`git clone ${cloneUrl} "${repoPath}"`, { stdio: 'pipe' });
+  // Clean up any existing repo to prevent "directory already exists" errors on retry
+  if (fs.existsSync(repoPath)) {
+    try {
+      fs.rmSync(repoPath, { recursive: true, force: true });
+      console.log(`[AppRunner] Cleaned up existing repo at ${repoPath}`);
+    } catch (cleanupErr) {
+      console.warn(`[AppRunner] Cleanup warning: ${cleanupErr.message} — attempting clone anyway`);
+    }
+  }
+
+  console.log(`[AppRunner] Cloning ${cloneUrl} to ${repoPath}…`);
+  try {
+    execSync(`git clone ${cloneUrl} "${repoPath}"`, { stdio: 'pipe' });
+  } catch (cloneErr) {
+    const msg = cloneErr.message || String(cloneErr);
+    console.error(`[AppRunner] Clone failed: ${msg}`);
+    throw new Error(`Failed to clone repository: ${msg}`);
+  }
 
   const { backend } = stack || {};
   let port = await findFreePort({ 'go': 8080, 'python': 5000, 'nodejs': 3000 }[backend?.toLowerCase()] || 3000);

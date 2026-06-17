@@ -714,24 +714,21 @@ function buildContents(history, newUserMessage) {
   ];
 }
 
-// ── Build enriched contents for fallback pools ────────────────────
-// Mirrors the contextualMessage logic inside streamFromGeminiPool so
-// Groq/Cerebras/SambaNova receive the same plan-context enrichment.
-// Strip code blocks from history + trim to last 6 turns + truncate enrichedNotes.
-function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
-  let msg = newUserMessage;
-  if (enrichedNotes && enrichedNotes !== 'No additional context.') {
-    // Truncate enrichedNotes to first 1500 chars (~375 tokens max)
-    // to prevent bloating the request when sent to fallback pools
-    const truncatedNotes = enrichedNotes.length > 1500
-      ? enrichedNotes.slice(0, 1500) + '\n[...truncated for space...]'
-      : enrichedNotes;
-    msg = `── PLAN CONTEXT ──\n${truncatedNotes}\n──────────────────\n\n${newUserMessage}`;
+// ── Build contents for fallback pools (brief-only, NO history) ──────
+// Fallback pools (Groq/Cerebras/SambaNova) receive ONLY:
+//   - The semantic brief (enrichedNotes) — contains full spec
+//   - Current user message — what to build right now
+// NO history — the brief replaces history entirely
+// NO system prompt — SYSTEM_CORE handles essential rules only
+function buildFallbackContents(newUserMessage, enrichedNotes) {
+  let spec = enrichedNotes || 'Build the application as described by the user.';
+  if (spec.length > 2000) {
+    spec = spec.slice(0, 2000) + '\n[...specification continues...]';
   }
-  // Trim to last 6 conversation turns (matching buildInput strategy)
-  // to ensure fallback pools don't receive bloated history
-  const recentHistory = stripCodeFromHistory(history).slice(-6);
-  return buildContents(recentHistory, msg);
+  const prompt = `SPECIFICATION:\n${spec}\n\nCURRENT REQUEST:\n${newUserMessage}`;
+  return [
+    { role: 'user', parts: [{ text: prompt }] }
+  ];
 }
 
 // ── Extract text from Antigravity SSE event ───────────────────────
@@ -837,8 +834,12 @@ async function streamFromGeminiPool(newUserMessage, history, apiKey, onChunk, on
 // ── Groq → Cerebras → SambaNova fallback chain ───────────────────
 // Called when Gemini pool is exhausted. Each pool throws with a specific
 // error code so we can distinguish "exhausted" from "unexpected error".
+// OPTION 3: brief-only with minimal system prompt — no history bloat
 async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier = 'build') {
-  const contents = buildEnrichedContents(history, newUserMessage, enrichedNotes);
+  // Use ONLY the brief + message, NO history — saves 15,000+ tokens
+  const contents = buildFallbackContents(newUserMessage, enrichedNotes);
+  // Minimal system prompt (SYSTEM_CORE only) instead of full SYSTEM_INSTRUCTION
+  // This prevents token bloat: removes 1500+ tokens of DESIGN + SANITY sections
 
   // ── Groq pool ─────────────────────────────────────────────────
   try {
@@ -846,7 +847,7 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
       contents,
       config:            { temperature: 0.7, maxOutputTokens: 32768 },
       apiKey:            process.env.GROQ_API_KEY,
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: SYSTEM_CORE,
       onChunk,
       onDone,
       tier,
@@ -864,7 +865,7 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
       contents,
       config:            { temperature: 0.7, maxOutputTokens: 8192 },
       apiKey:            process.env.CEREBRAS_API_KEY,
-      systemInstruction: SYSTEM_INSTRUCTION,
+      systemInstruction: SYSTEM_CORE,
       onChunk,
       onDone,
       tier,
@@ -881,7 +882,7 @@ async function runFallbackChain(newUserMessage, history, enrichedNotes, onChunk,
     contents,
     config:            { temperature: 0.7, maxOutputTokens: 8192 },
     apiKey:            process.env.SAMBANOVA_API_KEY,
-    systemInstruction: SYSTEM_INSTRUCTION,
+    systemInstruction: SYSTEM_CORE,
     onChunk,
     onDone,
     tier,
