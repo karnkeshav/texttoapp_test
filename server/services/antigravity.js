@@ -717,18 +717,21 @@ function buildContents(history, newUserMessage) {
 // ── Build enriched contents for fallback pools ────────────────────
 // Mirrors the contextualMessage logic inside streamFromGeminiPool so
 // Groq/Cerebras/SambaNova receive the same plan-context enrichment.
-// Strip code blocks from history + truncate enrichedNotes to keep token count manageable.
+// Strip code blocks from history + trim to last 6 turns + truncate enrichedNotes.
 function buildEnrichedContents(history, newUserMessage, enrichedNotes) {
   let msg = newUserMessage;
   if (enrichedNotes && enrichedNotes !== 'No additional context.') {
-    // Truncate enrichedNotes to first 2000 chars (~500 tokens max)
+    // Truncate enrichedNotes to first 1500 chars (~375 tokens max)
     // to prevent bloating the request when sent to fallback pools
-    const truncatedNotes = enrichedNotes.length > 2000
-      ? enrichedNotes.slice(0, 2000) + '\n[...truncated for space...]'
+    const truncatedNotes = enrichedNotes.length > 1500
+      ? enrichedNotes.slice(0, 1500) + '\n[...truncated for space...]'
       : enrichedNotes;
     msg = `── PLAN CONTEXT ──\n${truncatedNotes}\n──────────────────\n\n${newUserMessage}`;
   }
-  return buildContents(stripCodeFromHistory(history), msg);
+  // Trim to last 6 conversation turns (matching buildInput strategy)
+  // to ensure fallback pools don't receive bloated history
+  const recentHistory = stripCodeFromHistory(history).slice(-6);
+  return buildContents(recentHistory, msg);
 }
 
 // ── Extract text from Antigravity SSE event ───────────────────────
@@ -761,52 +764,59 @@ function shouldFallback(_err) {
 async function streamFromAntigravity(newUserMessage, history, apiKey, agentId, onChunk, onDone, enrichedNotes = '') {
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`;
 
-  const response = await axios({
-    method: 'post',
-    url: endpoint,
-    headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
-    data: {
-      agent: agentId,
-      input: buildInput(history, newUserMessage, enrichedNotes),
-      environment: { type: 'remote_sandbox' },
-      stream: true,
-    },
-    responseType: 'stream',
-    timeout: 320_000,
-  });
-
-  let fullText = '';
-  let buffer   = '';
-
-  return new Promise((resolve, reject) => {
-    response.data.on('data', (chunk) => {
-      buffer += chunk.toString();
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
-
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const raw = line.slice(5).trim();
-        if (raw === '[DONE]') { onDone(fullText); resolve(fullText); return; }
-        try {
-          const event = JSON.parse(raw);
-          const text  = extractText(event);
-          if (text) { fullText += text; onChunk(text); }
-        } catch (_) {}
-      }
+  try {
+    const response = await axios({
+      method: 'post',
+      url: endpoint,
+      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      data: {
+        agent: agentId,
+        input: buildInput(history, newUserMessage, enrichedNotes),
+        environment: { type: 'remote_sandbox' },
+        stream: true,
+      },
+      responseType: 'stream',
+      timeout: 320_000,
     });
-    response.data.on('end',   () => {
-      if (isStreamTruncated(fullText)) {
-        const err = new Error('Antigravity stream truncated — escalating to Gemini pool');
-        err.code = 'TRUNCATED_OUTPUT';
-        reject(err);
-        return;
-      }
-      onDone(fullText);
-      resolve(fullText);
+
+    let fullText = '';
+    let buffer   = '';
+
+    return new Promise((resolve, reject) => {
+      response.data.on('data', (chunk) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+
+        for (const line of lines) {
+          if (!line.startsWith('data:')) continue;
+          const raw = line.slice(5).trim();
+          if (raw === '[DONE]') { onDone(fullText); resolve(fullText); return; }
+          try {
+            const event = JSON.parse(raw);
+            const text  = extractText(event);
+            if (text) { fullText += text; onChunk(text); }
+          } catch (_) {}
+        }
+      });
+      response.data.on('end',   () => {
+        if (isStreamTruncated(fullText)) {
+          const err = new Error('Antigravity stream truncated — escalating to Gemini pool');
+          err.code = 'TRUNCATED_OUTPUT';
+          reject(err);
+          return;
+        }
+        onDone(fullText);
+        resolve(fullText);
+      });
+      response.data.on('error', reject);
     });
-    response.data.on('error', reject);
-  });
+  } catch (err) {
+    const msg = err?.response?.data?.error?.message || err?.message || String(err);
+    const code = err?.response?.status || err?.code || 'UNKNOWN';
+    console.warn(`[AI] Antigravity ${code} (${msg?.slice(0,60)}...) — falling back to Gemini pool`);
+    throw err;
+  }
 }
 
 // ── FALLBACK: Gemini pool (both SDKs, all working models) ─────────
