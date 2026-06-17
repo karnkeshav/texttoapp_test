@@ -1254,8 +1254,7 @@ async function deployToGitHub(fileId, btn) {
       } else if (isBackendNoLaunch) {
         // ── Backend app — code on GitHub, Run Locally via PowerShell ─
         const rlId  = `rl-${Date.now()}`;
-        const owner = _githubLogin || data.repoUrl?.split('/')?.[3] || 'unknown';
-        runLocalState.set(rlId, { owner, repo: data.repoName, stack: effectiveStack });
+        runLocalState.set(rlId, { cloneUrl: data.cloneUrl, repoName: data.repoName, stack: effectiveStack });
 
         const BACKEND_LABELS = { go: 'Go', python: 'Python', nodejs: 'Node.js',
                                   ruby: 'Ruby', php: 'PHP', rust: 'Rust' };
@@ -1307,8 +1306,8 @@ async function deployToGitHub(fileId, btn) {
         const shouldRunLocally = effectiveStack.frontend && effectiveStack.frontend !== 'html';
         if (shouldRunLocally) {
           runLocalState.set(rlId, {
-            owner: _githubLogin || data.repoUrl?.split('/')?.[3] || 'unknown',
-            repo:  data.repoName,
+            cloneUrl: data.cloneUrl,
+            repoName: data.repoName,
             stack: effectiveStack,
           });
         }
@@ -2193,10 +2192,15 @@ async function runLocally(rlId) {
   logEl.innerHTML = '';
 
   try {
+    const state = runLocalState.get(rlId);
+    if (!state) {
+      container.innerHTML = '<p style="color:#f87171;font-size:13px;">⚠️ State not found</p>';
+      return;
+    }
     const res = await fetch('/api/run-local', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ owner, repo, stack }),
+      body: JSON.stringify({ cloneUrl: state.cloneUrl, repoName: state.repoName, stack: state.stack }),
     });
 
     if (!res.ok) {

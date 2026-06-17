@@ -98,11 +98,12 @@ async function compileBrief(history, enrichedNotes, stack, apiKey) {
   try {
     brief = await pooledGenerate({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config:   { temperature: 0.1, maxOutputTokens: 1024 },
+      config:   { temperature: 0.1, maxOutputTokens: 600 },
       apiKey,
       tier:     'chat',
     });
     if (brief && brief.trim().length > 100) {
+      brief = brief.slice(0, 2400); // Hard cap: ~600 tokens max
       console.log(`[BriefCompiler] ✅ Gemini chat-tier — ${brief.length} chars (~${Math.ceil(brief.length / 4)} tokens)`);
     } else {
       brief = null;
@@ -116,11 +117,12 @@ async function compileBrief(history, enrichedNotes, stack, apiKey) {
     try {
       brief = await groqGenerate({
         contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        config:   { temperature: 0.1, maxOutputTokens: 1024 },
+        config:   { temperature: 0.1, maxOutputTokens: 600 },
         apiKey:   process.env.GROQ_API_KEY,
         tier:     'chat',
       });
       if (brief && brief.trim().length > 100) {
+        brief = brief.slice(0, 2400); // Hard cap: ~600 tokens max
         console.log(`[BriefCompiler] ✅ Groq chat-tier — ${brief.length} chars (~${Math.ceil(brief.length / 4)} tokens)`);
       } else {
         brief = null;
@@ -130,10 +132,10 @@ async function compileBrief(history, enrichedNotes, stack, apiKey) {
     }
   }
 
-  // Fallback: use enrichedNotes directly — still safe (~3,000 tokens max)
+  // Fallback: use enrichedNotes directly, but capped to 2000 chars (~500 tokens max)
   if (!brief) {
-    console.warn('[BriefCompiler] All compression failed — using enrichedNotes as brief');
-    brief = enrichedNotes || 'Build the application as described by the user.';
+    console.warn('[BriefCompiler] All compression failed — using enrichedNotes as brief (truncated)');
+    brief = (enrichedNotes || 'Build the application as described by the user.').slice(0, 2000);
   }
 
   const modelHint = selectBuildModel(brief, stack);
