@@ -1598,24 +1598,16 @@ REPO_NAME: ${repoName}
 STACK: ${stackName}
 
 ERRORS TO FIX:
-${dryResult.issues?.map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
-
-REQUIREMENTS (implement these exactly):
-${activeBrief.slice(0, 2000)}
+${dryResult.issues?.slice(0, 5).map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
 
 CRITICAL RULES:
-• React JSX MUST be inline in <script type="text/babel"> — NEVER src= attribute
-• CDN MUST use development builds:
-  https://unpkg.com/react@18/umd/react.development.js
-  https://unpkg.com/react-dom@18/umd/react-dom.development.js
-  https://unpkg.com/babel-standalone@7/babel.min.js
-• API calls: fetch('/api/route') — NEVER hardcoded localhost URLs
-• Backend files at ROOT level — no backend/ or frontend/ subdirectories
-• Go serves public/ via http.FileServer — no separate frontend server
-• Implement core features only — quality over quantity
-• Every code block MUST have a matching closing fence
+• React JSX MUST be inline <script type="text/babel"> — NEVER src=
+• CDN development builds: react@18, react-dom@18, babel-standalone@7
+• API calls: fetch('/api/route') — NO localhost URLs
+• Backend at ROOT, Go serves public/ via http.FileServer
+• Every code fence MUST close properly
 
-Start with REPO_NAME: ${repoName} then output ALL files completely.`.trim();
+Start with REPO_NAME: ${repoName} then output ALL files.`.trim();
 
             let fixedText = null;
             const onFixChunk = (text) => {
@@ -1625,14 +1617,15 @@ Start with REPO_NAME: ${repoName} then output ALL files completely.`.trim();
               fixedText = text;
             };
 
-            // Generate fix without history — spec already in prompt
+            // Generate fix: pass brief via enrichedNotes so buildFallbackContents uses it
+            // This prevents token bloat in fallback pools
             await antigravity.streamChat(
               fixPrompt,
-              [],       // ← no history — compact context
+              [],       // ← EMPTY history — compact context
               null,
               onFixChunk,
               onFixDone,
-              '',       // ← spec already in prompt
+              activeBrief,   // ← Pass brief to streamChat, not in prompt
               'build'   // ← use highest token model
             );
 

@@ -254,14 +254,24 @@ ${requirements ? `\nAPP CONTEXT (what this app does):\n${requirements.slice(0, 5
 HTML:
 ${codeToSend}`;
 
-  const text = await geminiPool.pooledGenerate({
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config:   { temperature: 0.1, maxOutputTokens: 8192 },
-    apiKey,
-  });
+  try {
+    const text = await geminiPool.pooledGenerate({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config:   { temperature: 0.1, maxOutputTokens: 8192 },
+      apiKey,
+    });
 
-  const fenced = text.match(/```(?:html|go|python|py|ruby|rb|rust|rs|php)?\s*([\s\S]*?)```/i);
-  return fenced ? fenced[1].trim() : text.trim();
+    const fenced = text.match(/```(?:html|go|python|py|ruby|rb|rust|rs|php)?\s*([\s\S]*?)```/i);
+    return fenced ? fenced[1].trim() : text.trim();
+  } catch (err) {
+    // If Gemini is exhausted, don't try fallback pools — regeneration is needed
+    if (err.code === 'GEMINI_POOL_EXHAUSTED' || /exhausted|truncated/i.test(err.message)) {
+      console.warn('[RunRepairPass] Gemini exhausted — regeneration required');
+      err.code = 'NEEDS_REGENERATION';
+      throw err;
+    }
+    throw err;
+  }
 }
 
 // ── Run all checks, collect every error ───────────────────────────
