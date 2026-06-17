@@ -131,6 +131,12 @@ async function groqGenerate({ contents, config, apiKey, tier = 'build' }) {
   const messages = toGroqMessages(contents);
   const slots    = selectSlots('generate', tier);
 
+     // DIAGNOSTIC
+    const _sysTokens = Math.ceil((systemInstruction || '').length / 4);
+    const _msgTokens = Math.ceil(JSON.stringify(messages).length / 4);
+    console.log('[DIAGNOSTIC] sys tokens:', _sysTokens, '| msg tokens:', _msgTokens, '| msg count:', messages.length);
+    // END DIAGNOSTIC
+  
   // First pass — available slots
   for (const { slot, i } of slots) {
     if (!isAvailable(i)) continue;

@@ -898,7 +898,7 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
       console.warn('[AI] Gemini pool exhausted — trying Groq pool');
     }
     // Gemini exhausted — fall through to Groq → Cerebras → SambaNova
-    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier);
+    await runFallbackChain(newUserMessage, [], enrichedNotes, onChunk, onDone, tier);
     return;
   }
 
@@ -926,7 +926,7 @@ async function streamChat(newUserMessage, history, _googleTokens, onChunk, onDon
       if (geminiErr.code !== 'GEMINI_POOL_EXHAUSTED') throw geminiErr;
       console.warn('[AI] Gemini pool exhausted — trying Groq pool');
     }
-    await runFallbackChain(newUserMessage, history, enrichedNotes, onChunk, onDone, tier);
+   await runFallbackChain(newUserMessage, [], enrichedNotes, onChunk, onDone, tier);
   }
 }
 
