@@ -43,7 +43,7 @@ CRITICAL RULES:
 OUTPUT FORMAT:
 Return the final, audited, working code with:
 REPO_NAME: [name]
-[All files with proper ``` code fences — each file must be complete]
+[All files with proper code fences — each file must be complete]
 AUDIT_RESULT: [PASS/FAIL with explanation of what works and any issues fixed]`;
 
 /**
