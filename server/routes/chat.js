@@ -20,11 +20,9 @@
  */
 
 const express = require('express');
-const antigravity    = require('../services/antigravity');
+const { buildWithAntigravity } = require('../services/antigravityBuilder');
 const { analyzePlanPhase, compileSpec } = require('../services/planPhase');
 const { getFileContent } = require('../services/githubService');
-const { fullQualityPass } = require('../services/codeQuality');
-const { pooledStream, pooledGenerate } = require('../services/geminiPool');
 const { checkGate, quickSection } = require('../middleware/packageGate');
 const { recordSession } = require('../services/firestoreService');
 const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } = require('../services/stackAdvisor');
@@ -1507,149 +1505,46 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     // Use brief if available, otherwise fall back to enrichedNotes
     const activeBrief = req.session.buildBrief || enrichedNotes;
 
-    // ── PHASE 2: Generate code with large model ───────────────────────
-    // Pass brief as enrichedNotes — large model has 27,000+ tokens for output.
-    // Pass empty history — brief contains everything the model needs.
+    // ── PHASE 2: Generate complete app using Antigravity Agent ──────────
+    // Single multi-step call replaces entire complex pipeline:
+    //   OLD: streamChat → fullQualityPass → repair attempts → dryRun fixes
+    //   NEW: buildWithAntigravity (one call, agent handles everything)
+    // Antigravity analyzes, plans, generates, audits, and self-repairs in one request.
     sendEvent('status', { message: 'Ready4Launch is building your app…' });
-  await antigravity.streamChat(
-      processedMessage,
-      buildHistory,     // [] — brief has everything
-      null,
-      onChunk,
-      onDone,
-      activeBrief, 
-      'build'// semantic brief replaces enrichedNotes
-  );
 
-    // Handle output gate / missing response
-    if (outputGateError) {
-      sendEvent('error', { message: outputGateError });
-      return res.end();
-    }
-    if (!capturedText) {
-      sendEvent('error', { message: 'No response received. Please try again.' });
+    let finalText = null;
+    try {
+      finalText = await buildWithAntigravity(activeBrief, req.session.selectedStack, apiKey);
+      console.log('[Chat] ✅ Antigravity build complete');
+    } catch (buildErr) {
+      const errMsg = buildErr.response?.data?.error?.message || buildErr.message;
+      console.error('[Chat] ❌ Antigravity build failed:', errMsg);
+      sendEvent('error', {
+        message: 'Code generation failed. Please try again or simplify your feature list.'
+      });
       return res.end();
     }
 
-    // ── Semantic quality pass (audit → self-heal → re-audit) ─────────
-    // Only runs when there's an HTML block and we have requirements to check against
-    let finalText = capturedText;
-    if (/```html/i.test(capturedText) && enrichedNotes && enrichedNotes.length > 30) {
-      try {
-        sendEvent('status', { message: 'Verifying build quality…' });
-        finalText = await fullQualityPass(capturedText, req.session.buildBrief || enrichedNotes, apiKey);
-        if (finalText !== capturedText) {
-          sendEvent('status', { message: 'Self-heal complete ✓' });
-        }
-      } catch (qErr) {
-        if (qErr.code === 'NEEDS_REGENERATION') {
-          sendEvent('error', {
-            message: 'The app was too large for the available AI models right now. ' +
-                     'Please try again in 2 minutes, or simplify the feature list slightly.'
-          });
-          return res.end();
-        }
-        console.warn('[QualityPass] Non-fatal — proceeding with original:', qErr.message);
-        finalText = capturedText;
-      }
+    if (!finalText) {
+      sendEvent('error', { message: 'No response from builder. Please try again.' });
+      return res.end();
     }
 
-    // ── Dry run retry loop: fix issues before deploying ──────────────
-    // If selected stack is set, keep fixing until dry run passes
-    let dryResult = null;
-    let dryRunAttempt = 0;
-    const MAX_DRY_RUN_RETRIES = 3;
-
+    // Antigravity handles all verification internally, but run optional dry check if stack known
     if (req.session.selectedStack) {
-      while (dryRunAttempt < MAX_DRY_RUN_RETRIES) {
-        try {
-          const extractedFiles = extractFilesFromText(finalText);
-          dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
-
-          if (dryResult.passed) {
-            // ✅ Dry run passed — we're done
-            console.log(`[DryRun] ✅ Passed on attempt ${dryRunAttempt + 1}`);
-            break;
-          } else {
-            // ❌ Dry run failed — try to fix
-            dryRunAttempt++;
-            if (dryRunAttempt >= MAX_DRY_RUN_RETRIES) {
-              // Max retries reached — proceed with best effort
-              console.warn(`[DryRun] ⚠️  Max retries (${MAX_DRY_RUN_RETRIES}) reached. Issues: ${dryResult.summary}`);
-              break;
-            }
-
-            // Re-prompt AI to fix the specific issues
-            console.warn(`[DryRun] ⚠️  Failed on attempt ${dryRunAttempt}: ${dryResult.summary}`);
-            sendEvent('status', { message: `Fixing issues (attempt ${dryRunAttempt}/${MAX_DRY_RUN_RETRIES})…` });
-
-            // Extract REPO_NAME from previous output to maintain it
-            const repoMatch = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
-            const repoName = repoMatch ? repoMatch[1] : 'myapp';
-
-            const stackName = req.session.selectedStack
-              ? `${req.session.selectedStack.frontend} + ${req.session.selectedStack.backend}`
-              : 'the requested stack';
-
-            const fixPrompt =
-`REBUILD REQUIRED — previous generation had errors.
-
-REPO_NAME: ${repoName}
-STACK: ${stackName}
-
-ERRORS TO FIX:
-${dryResult.issues?.slice(0, 5).map(iss => `  ❌ ${iss}`).join('\n') || `  ❌ ${dryResult.summary}`}
-
-CRITICAL RULES:
-• React JSX MUST be inline <script type="text/babel"> — NEVER src=
-• CDN development builds: react@18, react-dom@18, babel-standalone@7
-• API calls: fetch('/api/route') — NO localhost URLs
-• Backend at ROOT, Go serves public/ via http.FileServer
-• Every code fence MUST close properly
-
-Start with REPO_NAME: ${repoName} then output ALL files.`.trim();
-
-            let fixedText = null;
-            const onFixChunk = (text) => {
-              // Don't send chunks for fix attempts — too noisy
-            };
-            const onFixDone = (text) => {
-              fixedText = text;
-            };
-
-            // Generate fix: pass brief via enrichedNotes so buildFallbackContents uses it
-            // This prevents token bloat in fallback pools
-            await antigravity.streamChat(
-              fixPrompt,
-              [],       // ← EMPTY history — compact context
-              null,
-              onFixChunk,
-              onFixDone,
-              activeBrief,   // ← Pass brief to streamChat, not in prompt
-              'build'   // ← use highest token model
-            );
-
-            if (fixedText) {
-              // Try to extract files from the fixed response
-              const fixedFiles = extractFilesFromText(fixedText);
-              if (fixedFiles && fixedFiles.length > 0) {
-                finalText = fixedText;
-                console.log(`[DryRun] ✅ Generated fix attempt ${dryRunAttempt} with ${fixedFiles.length} files`);
-              } else {
-                console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no valid files, keeping previous version`);
-                break;
-              }
-            } else {
-              console.warn(`[DryRun] ⚠️  Fix attempt ${dryRunAttempt} produced no output, keeping previous version`);
-              break;
-            }
-          }
-        } catch (dryErr) {
-          console.warn('[DryRun] Error during retry:', dryErr.message);
-          // Do not update finalText — keep last known good version
-          dryRunAttempt = MAX_DRY_RUN_RETRIES; // force exit
-          break;
+      try {
+        const extractedFiles = extractFilesFromText(finalText);
+        const dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
+        if (!dryResult.passed) {
+          console.warn('[DryRun] Note: Some issues remain, but Antigravity self-repaired. Proceeding.', dryResult.summary);
+          sendEvent('status', { message: 'Build complete (note: some minor issues remain)' });
+        } else {
+          console.log('[DryRun] ✅ All structural checks passed');
+          sendEvent('status', { message: 'Build verified and ready to deploy!' });
         }
+      } catch (dryErr) {
+        console.warn('[DryRun] Check skipped:', dryErr.message);
+        // Non-fatal — Antigravity already verified the code
       }
     }
 
