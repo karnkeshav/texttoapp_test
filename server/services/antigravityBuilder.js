@@ -82,7 +82,7 @@ Now execute the 6-step workflow and return perfect, tested, production-ready cod
       {
         agent: 'antigravity-preview-05-2026',
         input: buildPrompt,
-        environment: { type: 'remote_sandbox' }
+        environment: { type: 'remote' }
       },
       {
         headers: {
