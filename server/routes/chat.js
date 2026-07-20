@@ -20,9 +20,12 @@
  */
 
 const express = require('express');
+const antigravity = require('../services/antigravity'); // edit-mode chat + analysis paths
 const { buildWithAntigravity } = require('../services/antigravityBuilder');
 const { analyzePlanPhase, compileSpec } = require('../services/planPhase');
 const { getFileContent } = require('../services/githubService');
+const { fullQualityPass } = require('../services/codeQuality');
+const { pooledStream, pooledGenerate } = require('../services/geminiPool');
 const { checkGate, quickSection } = require('../middleware/packageGate');
 const { recordSession } = require('../services/firestoreService');
 const { getStackQuestions, buildStackContext, getDeploymentMode, runDryCheck } = require('../services/stackAdvisor');
@@ -1519,8 +1522,11 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     } catch (buildErr) {
       const errMsg = buildErr.response?.data?.error?.message || buildErr.message;
       console.error('[Chat] ❌ Antigravity build failed:', errMsg);
+      const keyBlocked = buildErr.code === 'API_KEY_BLOCKED' || /leaked|API key not valid|API key expired/i.test(errMsg);
       sendEvent('error', {
-        message: 'Code generation failed. Please try again or simplify your feature list.'
+        message: keyBlocked
+          ? 'The server\'s Gemini API key is blocked. Ask the operator to create a NEW key in Google AI Studio (regenerating the old one keeps the block), update .env, and restart.'
+          : 'Code generation failed. Please try again or simplify your feature list.'
       });
       return res.end();
     }

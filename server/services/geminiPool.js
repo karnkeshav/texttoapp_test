@@ -158,6 +158,24 @@ function isPermissionError(err) {
          msg.includes('API_KEY_INVALID') || err?.status === 403;
 }
 
+// Key blocked at the account level — leaked, revoked, or expired.
+// This affects EVERY slot identically, so retrying/cooling is pure waste:
+// fail fast with a clear, actionable error instead of 28 × 60s cooldowns.
+function isKeyBlocked(err) {
+  const msg = err?.message || String(err);
+  return /reported as leaked|API key not valid|API key expired|API_KEY_INVALID/i.test(msg);
+}
+
+function keyBlockedError() {
+  const err = new Error(
+    'Gemini API key is blocked (reported as leaked, invalid, or expired). ' +
+    'Create a NEW API key credential in Google AI Studio — regenerating the old one keeps the block — ' +
+    'then update GEMINI_API_KEY in .env and restart.'
+  );
+  err.code = 'API_KEY_BLOCKED';
+  return err;
+}
+
 // ── Helpers to extract text from SDK responses ────────────────────
 function extractText(response, sdk) {
   if (sdk === 'legacy') {
@@ -264,7 +282,7 @@ function selectSlots(mode, tier, multimodal) {
  * @param {string} [opts.tier]     - 'build' (default) | 'chat'
  * @returns {Promise<string>}      - extracted text
  */
-async function pooledGenerate({ contents, config, apiKey, tier = 'build' }) {
+async function pooledGenerate({ contents, config, apiKey, tier = 'build', failFast = false }) {
   const generateSlots = selectSlots('generate', tier, false);
 
   // First pass — try available slots
@@ -279,6 +297,7 @@ async function pooledGenerate({ contents, config, apiKey, tier = 'build' }) {
       trackRequest('gemini', slot.model);
       return text;
     } catch (err) {
+      if (isKeyBlocked(err))      throw keyBlockedError(); // account-level — no slot can succeed
       if (isQuotaError(err))      { markCooling(i); continue; }
       if (isNotFound(err))        { markDead(i);    continue; }
       if (isBadRequest(err))      { markDead(i);    continue; } // e.g. Gemma + JSON mode
@@ -286,6 +305,14 @@ async function pooledGenerate({ contents, config, apiKey, tier = 'build' }) {
       // Unexpected error: log and try next slot rather than surfacing immediately
       console.warn(`[GeminiPool] Slot ${i} (${slot.sdk}/${slot.model}) unexpected error: ${err.message} — trying next slot`);
     }
+  }
+
+  // failFast callers (brief compiler, non-critical passes) skip the cooldown wait —
+  // they have their own fallbacks and must never hang the request for 60s.
+  if (failFast) {
+    const err = new Error('All Gemini generate slots cooling — failFast caller skipping cooldown wait');
+    err.code = 'GEMINI_POOL_EXHAUSTED';
+    throw err;
   }
 
   // Second pass — wait out the shortest cooldown and retry once
@@ -355,6 +382,7 @@ async function pooledStream({ contents, config, apiKey, systemInstruction, onChu
       onDone(fullText);
       return;
     } catch (err) {
+      if (isKeyBlocked(err))      throw keyBlockedError(); // account-level — no slot can succeed
       if (isQuotaError(err))      { markCooling(i); continue; }
       if (isNotFound(err))        { markDead(i);    continue; }
       if (isBadRequest(err))      { markDead(i);    continue; }

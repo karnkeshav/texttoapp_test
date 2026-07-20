@@ -101,6 +101,7 @@ async function compileBrief(history, enrichedNotes, stack, apiKey) {
       config:   { temperature: 0.1, maxOutputTokens: 600 },
       apiKey,
       tier:     'chat',
+      failFast: true, // never wait out a 60s cooldown — Groq/enrichedNotes fallbacks exist
     });
     if (brief && brief.trim().length > 100) {
       brief = brief.slice(0, 2400); // Hard cap: ~600 tokens max

@@ -759,13 +759,18 @@ function shouldFallback(_err) {
 
 // ── PRIMARY: Antigravity Interactions API ─────────────────────────
 async function streamFromAntigravity(newUserMessage, history, apiKey, agentId, onChunk, onDone, enrichedNotes = '') {
-  const endpoint = `https://generativelanguage.googleapis.com/v1beta/interactions?key=${apiKey}`;
+  // Key goes in a header, never the URL — URLs leak into logs and proxies
+  const endpoint = 'https://generativelanguage.googleapis.com/v1beta/interactions';
 
   try {
     const response = await axios({
       method: 'post',
       url: endpoint,
-      headers: { 'Content-Type': 'application/json', 'Accept': 'text/event-stream' },
+      headers: {
+        'Content-Type': 'application/json',
+        'Accept': 'text/event-stream',
+        'x-goog-api-key': apiKey,
+      },
       data: {
         agent: agentId,
         input: buildInput(history, newUserMessage, enrichedNotes),

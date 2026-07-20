@@ -125,18 +125,15 @@ function selectSlots(mode, tier) {
 }
 
 // ── Public: one-shot generation ───────────────────────────────────
-async function groqGenerate({ contents, config, apiKey, tier = 'build' }) {
-  const key      = apiKey || process.env.GROQ_API_KEY;
-  const groq     = new Groq({ apiKey: key });
-  const messages = toGroqMessages(contents);
-  const slots    = selectSlots('generate', tier);
+async function groqGenerate({ contents, config, apiKey, systemInstruction, tier = 'build' }) {
+  const key          = apiKey || process.env.GROQ_API_KEY;
+  const groq         = new Groq({ apiKey: key });
+  const baseMessages = toGroqMessages(contents);
+  const messages     = systemInstruction
+    ? [{ role: 'system', content: systemInstruction }, ...baseMessages]
+    : baseMessages;
+  const slots        = selectSlots('generate', tier);
 
-     // DIAGNOSTIC
-    const _sysTokens = Math.ceil((systemInstruction || '').length / 4);
-    const _msgTokens = Math.ceil(JSON.stringify(messages).length / 4);
-    console.log('[DIAGNOSTIC] sys tokens:', _sysTokens, '| msg tokens:', _msgTokens, '| msg count:', messages.length);
-    // END DIAGNOSTIC
-  
   // First pass — available slots
   for (const { slot, i } of slots) {
     if (!isAvailable(i)) continue;

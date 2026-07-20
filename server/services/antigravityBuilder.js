@@ -133,6 +133,9 @@ Now execute the 6-step workflow and return perfect, tested, production-ready cod
     const status = err.response?.status || 'network error';
     const message = err.response?.data?.error?.message || err.message;
     console.error(`[AntigravityBuilder] ❌ Failed (${status}): ${message}`);
+    if (/reported as leaked|API key not valid|API key expired/i.test(message)) {
+      err.code = 'API_KEY_BLOCKED';
+    }
     throw err;
   }
 }
