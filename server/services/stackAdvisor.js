@@ -62,9 +62,12 @@ function getStackLabel(stack) {
 function getDeploymentMode(stack) {
   const { frontend, backend } = stack;
   if (backend && backend !== 'none') {
-    if (backend === 'nodejs') return 'local';
-    if (['go', 'python', 'ruby', 'php', 'rust'].includes(backend)) return 'local';
-    return 'manual';
+    // 'local' is attempted for every backend now — server/services/localRunCommands.js
+    // has a real launch command for each of these. Java/C# need a JDK/.NET
+    // toolchain present on the host to actually succeed; if it isn't, Run
+    // Locally surfaces a clear "command not found" error rather than never
+    // offering the option at all.
+    return 'local';
   }
   if (frontend === 'nextjs' || frontend === 'nuxtjs') return 'local';
   if (frontend === 'angular' || frontend === 'svelte') return 'local';
@@ -79,6 +82,8 @@ function getRunCommand(stack) {
     case 'ruby':    return 'bundle install && ruby app.rb';
     case 'php':     return 'php -S localhost:8080';
     case 'rust':    return 'cargo run';
+    case 'java':    return 'mvn spring-boot:run  (or ./gradlew bootRun)';
+    case 'csharp':  return 'dotnet run';
     default:        return null;
   }
 }
@@ -152,38 +157,39 @@ Who will use this app, and how?
   let q4;
   if (hasBackend) {
     q4 = `**Question 4 of 5 — Features & integrations:**
-List any of these you need (say "none" for what doesn't apply):
-- 🔐 **Authentication** — sign up / log in (email, Google OAuth, GitHub OAuth)
-- 📧 **Email** — confirmation emails, notifications, contact forms
-- 💳 **Payments** — checkout, subscriptions (Stripe, Razorpay)
-- 📁 **File uploads** — images, documents, exports
-- ⚡ **Real-time** — live chat, notifications (WebSockets)
-- 🌐 **Third-party APIs** — maps, weather, social media, etc.`;
+Select any of these you need (reply with numbers e.g. 1, 4 or say "none"):
+1. 🔐 **Authentication** — sign up / log in (email, Google OAuth, GitHub OAuth)
+2. 📧 **Email** — confirmation emails, notifications, contact forms
+3. 💳 **Payments** — checkout, subscriptions (Stripe, Razorpay)
+4. 📁 **File uploads** — images, documents, exports
+5. ⚡ **Real-time** — live chat, notifications (WebSockets)
+6. 🌐 **Third-party APIs** — maps, weather, social media, etc.`;
   } else if (type === 'pwa') {
     q4 = `**Question 4 of 5 — PWA features:**
-- Should the app work **offline**? What content must be available without internet?
-- Push notifications needed? What events trigger them?
-- Home screen installation — should it look like a native app (full screen, no browser UI)?
-- Any background sync required? (sync data when back online)`;
+Select any of these you need (reply with numbers e.g. 1, 3):
+1. **Offline support** — cache content for offline use
+2. **Push notifications** — alert users when app updates
+3. **Native app feel** — full screen without browser UI
+4. **Background sync** — sync data when connection returns`;
   } else {
     q4 = `**Question 4 of 5 — Technical requirements:**
-Any specific requirements? (Say "none" for what doesn't apply)
-- 🔐 Login / user accounts
-- 💾 Save & load data (localStorage or external API)
-- 📤 Export / download (CSV, PDF, image)
-- 🔔 Notifications or alerts
-- 🎨 Specific UI library (Tailwind, Bootstrap, Material UI, or custom)
-- ♿ Accessibility requirements (WCAG, screen reader support)`;
+Select any of these you need (reply with numbers e.g. 1, 3 or say "none"):
+1. 🔐 Login / user accounts
+2. 💾 Save & load data (localStorage or external API)
+3. 📤 Export / download (CSV, PDF, image)
+4. 🔔 Notifications or alerts
+5. 🎨 Specific UI library (Tailwind, Bootstrap, Material UI, or custom)
+6. ♿ Accessibility requirements (WCAG, screen reader support)`;
   }
 
   // ── Q5: design & brand ───────────────────────────────────────────
   const q5 = `**Question 5 of 5 — Design, style & feel:**
 Last one — help me get the visuals right:
-- **Colour palette**: dark theme, light theme, or specific colours/brand? (hex codes welcome)
-- **Design mood**: minimal & clean, bold & energetic, corporate, playful, luxury?
-- **Typography**: modern sans-serif (Inter, Poppins), classic serif, monospace?
-- **Any references**: name a site or app whose design you love (even rough ideas help)
-- **Brand name/logo**: should any specific name or logo appear?`;
+1. **Colour palette**: dark theme, light theme, or specific colours/brand? (hex codes welcome)
+2. **Design mood**: minimal & clean, bold & energetic, corporate, playful, luxury?
+3. **Typography**: modern sans-serif (Inter, Poppins), classic serif, monospace?
+4. **Any references**: name a site or app whose design you love (even rough ideas help)
+5. **Brand name/logo**: should any specific name or logo appear?`;
 
   return [q1, q2, q3, q4, q5];
 }
@@ -291,6 +297,55 @@ function buildStackContext(stack, answers) {
         `• Entry: main.py or app.py`,
         `• Include: README with "pip install -r requirements.txt && python main.py"`,
       );
+    } else if (stack.backend === 'go') {
+      lines.push(
+        ``,
+        `• Backend: Go, standard library net/http (or a minimal router)`,
+        `• Entry: main.go at repo root, package main`,
+        `• Read port from: os.Getenv("PORT") — default to 8080 if unset`,
+        `• go.mod at root declaring the module`,
+        `• http.FileServer to serve the public/ directory for the frontend`,
+      );
+    } else if (stack.backend === 'ruby') {
+      lines.push(
+        ``,
+        `• Backend: Ruby, Sinatra (preferred for a single small app) or Rails`,
+        `• Entry: app.rb at repo root`,
+        `• Read port from: ENV['PORT'] — e.g. set :port, ENV['PORT'] || 4567`,
+        `• Gemfile listing all dependencies`,
+        `• Serve the public/ directory for the frontend (Sinatra does this by default from ./public)`,
+      );
+    } else if (stack.backend === 'php') {
+      lines.push(
+        ``,
+        `• Backend: PHP, plain (no framework needed for a small app)`,
+        `• Entry: index.php at repo root — the local runner uses PHP's built-in server (php -S), which controls the port directly, so do NOT hardcode a port anywhere`,
+        `• composer.json only if you actually use a dependency`,
+      );
+    } else if (stack.backend === 'rust') {
+      lines.push(
+        ``,
+        `• Backend: Rust, actix-web or axum (pick one, keep dependencies minimal)`,
+        `• Entry: src/main.rs`,
+        `• Read port from: std::env::var("PORT") — default to 8080 if unset`,
+        `• Cargo.toml at root declaring all dependencies`,
+      );
+    } else if (stack.backend === 'java') {
+      lines.push(
+        ``,
+        `• Backend: Java, Spring Boot`,
+        `• Use Maven: pom.xml at root with spring-boot-starter-web, and the standard src/main/java/... layout`,
+        `• Do NOT hardcode server.port in application.properties — the local runner passes --server.port on the command line, which overrides it`,
+        `• Put frontend files in src/main/resources/static/ — Spring Boot serves that directory automatically with no extra code`,
+      );
+    } else if (stack.backend === 'csharp') {
+      lines.push(
+        ``,
+        `• Backend: C#, ASP.NET Core minimal API`,
+        `• A single .csproj at repo root (net8.0, Microsoft.NET.Sdk.Web) plus Program.cs`,
+        `• Do NOT hardcode a URL/port in Program.cs — the local runner sets ASPNETCORE_URLS, which controls the port`,
+        `• Put frontend files in wwwroot/ and call app.UseStaticFiles() — ASP.NET Core serves that directory automatically`,
+      );
     } else {
       lines.push(``, `• Backend: ${BACKEND_LABELS[stack.backend]} — follow standard conventions`);
     }
@@ -333,32 +388,75 @@ function runDryCheck(files, stack) {
   const issues = [];
   const { frontend, backend } = stack || {};
 
+  // Validate JSON in package.json if present
+  files.forEach(f => {
+    if (f.path === 'package.json') {
+      try {
+        JSON.parse(f.content);
+      } catch (e) {
+        issues.push('Invalid JSON syntax in package.json');
+      }
+    }
+  });
+
+  // Check for HTML truncation across all html files
+  files.forEach(f => {
+    if (f.path.endsWith('.html')) {
+      if (!/<\/html>/i.test(f.content) || !/<\/body>/i.test(f.content)) {
+        issues.push(`${f.path}: HTML truncated — missing closing </html> tag`);
+      }
+    }
+  });
+
   // Frontend validation
   if (frontend && frontend !== 'html') {
-    const hasIndexHtml = files.some(f => f.path === 'public/index.html' || f.path === 'index.html');
-    const hasPackageJson = files.some(f => f.path === 'package.json');
+    const hasIndexHtml = files.some(f => f.path.endsWith('index.html'));
 
     if (!hasIndexHtml) {
       issues.push(`Frontend framework requires index.html in public/ or root`);
     }
 
-    // Check for hardcoded localhost URLs in JS files
+    // Auto-heal hardcoded localhost URLs in JS/HTML files
     files.forEach(f => {
-      if (f.path.startsWith('public/') && f.path.endsWith('.js')) {
-        if (/localhost|127\.0\.0\.1/.test(f.content)) {
-          issues.push(`JavaScript file ${f.path} contains hardcoded localhost URL — use relative or environment variable`);
+      if (f.path.endsWith('.js') || f.path.endsWith('.html')) {
+        if (/http:\/\/(?:localhost|127\.0\.0\.1):\d+/i.test(f.content)) {
+          f.content = f.content.replace(/http:\/\/(?:localhost|127\.0\.0\.1):\d+/gi, '');
+          console.log(`[DryRun Auto-Heal] Stripped hardcoded localhost URL in ${f.path}`);
         }
       }
     });
 
-    // Check for Babel external src anti-pattern (must be inline)
+    // Auto-heal Babel external src anti-pattern
     files.forEach(f => {
-      if (f.path === 'public/index.html' || f.path === 'index.html') {
-        if (/<script\s+type=["']text\/babel["'][^>]*src=/i.test(f.content)) {
-          issues.push(`Babel scripts must be inline (no src= attribute) — use <script type="text/babel">code...</script>`);
+      if (f.path.endsWith('index.html')) {
+        const babelMatch = f.content.match(/<script\s+type=["']text\/babel["'][^>]*src=["']([^"']+)["'][^>]*>\s*<\/script>/i);
+        if (babelMatch) {
+          const srcPath = babelMatch[1];
+          const localFile = files.find(file => file.path === srcPath || file.path === 'public/' + srcPath || file.path.endsWith(srcPath));
+          if (localFile && localFile.content) {
+            f.content = f.content.replace(babelMatch[0], `<script type="text/babel">\n${localFile.content}\n</script>`);
+            console.log(`[DryRun Auto-Heal] Inlined ${srcPath} into index.html <script type="text/babel">`);
+          } else if (!srcPath.startsWith('http')) {
+            issues.push(`Babel scripts must be inline (no src= attribute) — use <script type="text/babel">code...</script>`);
+          }
         }
       }
     });
+
+    // Framework-specific CDN checks (only for CDN/no-backend apps)
+    if ((!backend || backend === 'none')) {
+      if (frontend === 'react') {
+        const indexFile = files.find(f => f.path.endsWith('index.html'));
+        if (indexFile && !/react/i.test(indexFile.content)) {
+          issues.push(`React SPA requires React CDN scripts in index.html`);
+        }
+      } else if (frontend === 'vue') {
+        const indexFile = files.find(f => f.path.endsWith('index.html'));
+        if (indexFile && !/vue/i.test(indexFile.content)) {
+          issues.push(`Vue SPA requires Vue CDN script in index.html`);
+        }
+      }
+    }
   }
 
   // Backend validation — check for required files based on backend type
@@ -405,8 +503,22 @@ function runDryCheck(files, stack) {
         break;
 
       case 'nodejs':
-        if (!files.some(f => f.path === 'package.json')) {
+        const pkgFile = files.find(f => f.path === 'package.json');
+        if (!pkgFile) {
           issues.push('Node.js backend requires package.json at root');
+        } else {
+          try {
+            const pkg = JSON.parse(pkgFile.content);
+            if (!pkg.scripts) pkg.scripts = {};
+            if (!pkg.scripts.start && !pkg.scripts.dev) {
+              const serverFile = files.find(f => f.path === 'server.js' || f.path === 'index.js' || f.path === 'app.js')?.path || 'server.js';
+              pkg.scripts.start = `node ${serverFile}`;
+              pkgFile.content = JSON.stringify(pkg, null, 2);
+              console.log(`[DryRun Auto-Heal] Added "start": "node ${serverFile}" to package.json`);
+            }
+          } catch (e) {
+            // Invalid JSON caught above
+          }
         }
         if (!files.some(f => f.path === 'server.js' || f.path === 'index.js' || f.path === 'app.js')) {
           issues.push('Node.js backend requires server.js, index.js, or app.js at root');
@@ -426,9 +538,8 @@ function runDryCheck(files, stack) {
         if (!files.some(f => f.path === 'index.php')) {
           issues.push('PHP backend requires index.php at root');
         }
-        if (!files.some(f => f.path === 'composer.json')) {
-          issues.push('PHP backend requires composer.json for dependencies');
-        }
+        // composer.json is optional — the local runner only installs it if present,
+        // and a dependency-free PHP app (served via `php -S`) never needs one.
         break;
 
       case 'rust':
@@ -439,21 +550,27 @@ function runDryCheck(files, stack) {
           issues.push('Rust backend requires src/main.rs');
         }
         break;
+
+      case 'java':
+        if (!files.some(f => f.path === 'pom.xml') && !files.some(f => f.path === 'build.gradle' || f.path === 'build.gradle.kts')) {
+          issues.push('Java backend requires pom.xml (Maven) or build.gradle (Gradle) at root');
+        }
+        break;
+
+      case 'csharp':
+        if (!files.some(f => f.path.endsWith('.csproj'))) {
+          issues.push('C# backend requires a .csproj file at root');
+        }
+        break;
     }
   }
 
-  // ── Truncation check — mismatched fences mean truncated output ────
+  // Truncation check — mismatched fences mean truncated output
   for (const f of files) {
     const opens  = (f.content.match(/^```\S*/gm) || []).length;
     const closes = (f.content.match(/^```\s*$/gm) || []).length;
     if (opens > closes) {
       issues.push(`${f.path}: output appears truncated (${opens} opening fences, ${closes} closing)`);
-    }
-    // HTML with Babel but no closing </html>
-    if (f.path.endsWith('.html') &&
-        /<script[^>]+text\/babel/i.test(f.content) &&
-        !/<\/html>/i.test(f.content)) {
-      issues.push(`${f.path}: HTML truncated — React/Babel script block has no closing </html>`);
     }
   }
 

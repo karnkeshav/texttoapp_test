@@ -406,7 +406,7 @@ Maximum 5 issues. Keep the entire response under 150 words.`;
 async function semanticRepair(generatedText, issues, requirements, apiKey) {
 
   // ── STEP 0: Detect truncation — repair cannot fix a cut file ──────
-  const openFences  = (generatedText.match(/^```\S*/gm) || []).length;
+  const openFences  = (generatedText.match(/^```[a-zA-Z0-9_-]+/gm) || []).length;
   const closeFences = (generatedText.match(/^```\s*$/gm) || []).length;
   const hasTruncatedFence = openFences > closeFences;
   const isTruncationIssue = issues.some(i =>
@@ -433,13 +433,20 @@ async function semanticRepair(generatedText, issues, requirements, apiKey) {
     const content   = m[1] || '';
     const firstLine = content.split('\n')[0];
     const pathMatch = FILE_RE.exec(firstLine);
-    if (pathMatch) {
-      blocks.push({
-        full:    m[0],
-        path:    pathMatch[1],
-        content: content.split('\n').slice(1).join('\n').trim(),
-      });
-    }
+    const pathName  = pathMatch ? pathMatch[1] : 'index.html';
+    const cleanContent = pathMatch ? content.split('\n').slice(1).join('\n').trim() : content.trim();
+    blocks.push({
+      full:           m[0],
+      path:           pathName,
+      content:        cleanContent,
+      hasFileComment: !!pathMatch
+    });
+  }
+
+  // Multi-file outputs should skip targeted file repair to preserve project structure
+  if (blocks.length > 1) {
+    console.log('[SemanticRepair] Multi-file output detected — skipping repair to preserve structure');
+    return generatedText;
   }
 
   // Find which file is broken
@@ -490,11 +497,15 @@ CURRENT FILE (relevant section):
 ${contentToSend}`;
 
     try {
-      const fixed = await geminiPool.pooledGenerate({
+      let streamResult = '';
+      const repairFn = geminiPool.pooledStream || geminiPool.pooledGenerate;
+      const res = await repairFn({
         contents: [{ role: 'user', parts: [{ text: repairPrompt }] }],
         config:   { temperature: 0.1, maxOutputTokens: 8192 },
         apiKey,
+        onDone: (txt) => { streamResult = txt; },
       });
+      const fixed = typeof res === 'string' ? res : (streamResult || '');
 
       if (fixed && fixed.trim().length > 100) {
         // Determine the correct fence language for this file
@@ -502,7 +513,11 @@ ${contentToSend}`;
         const lang = ext === 'html' ? 'html' : ext === 'css' ? 'css' :
                      ext === 'go' ? 'go' : ext === 'py' ? 'python' :
                      ext === 'json' ? 'json' : 'javascript';
-        const newBlock = `\`\`\`${lang}\n// FILE: ${targetPath}\n${fixed.trim()}\n\`\`\``;
+        let cleanFixed = fixed.trim();
+        cleanFixed = cleanFixed.replace(/^```[a-zA-Z0-9_-]*\n?/, '').replace(/\n?```\s*$/, '').trim();
+
+        const fileComment = targetBlock.hasFileComment ? `// FILE: ${targetPath}\n` : '';
+        const newBlock = `\`\`\`${lang}\n${fileComment}${cleanFixed}\n\`\`\``;
         attempt1Result = attempt1Result.replace(targetBlock.full, newBlock);
         console.log(`[SemanticRepair] Attempt 1 ✅ repaired ${targetPath}`);
       }
@@ -534,13 +549,43 @@ async function fullQualityPass(generatedText, requirements, apiKey) {
   console.log(`[SemanticAudit] ${audit1.passed ? '✅ PASS' : `❌ FAIL — ${audit1.issues.length} issue(s): ${audit1.issues.slice(0,2).join(' | ')}`}`);
   if (audit1.passed) return generatedText;
 
-  // ── Attempt 1: Targeted file repair ──────────────────────────────
+  // Check Gemini pool capacity before repair
+  try {
+    const status = geminiPool.poolStatus ? geminiPool.poolStatus() : null;
+    if (Array.isArray(status)) {
+      const hasStreamSlot = status.some(s => (s.mode === 'stream' || !s.mode) && s.available && !s.dead);
+      if (!hasStreamSlot) {
+        console.warn('[SemanticRepair] Gemini stream slots unavailable or cooling — skipping repair');
+        return generatedText;
+      }
+    } else if (status && status.availableSlots === 0) {
+      console.warn('[SemanticRepair] Gemini pool exhausted — skipping repair');
+      return generatedText;
+    }
+  } catch (err) {
+    console.warn('[SemanticRepair] poolStatus threw — skipping repair:', err.message);
+    return generatedText;
+  }
+
+  // ── Attempt 1: Targeted file repair (with 10s timeout) ────────────
   let afterAttempt1 = generatedText;
   try {
-    afterAttempt1 = await semanticRepair(generatedText, audit1.issues, requirements, apiKey);
+    let timer;
+    const timeoutPromise = new Promise(resolve => {
+      timer = setTimeout(() => resolve('TIMEOUT'), 10000);
+    });
+    const repairPromise = semanticRepair(generatedText, audit1.issues, requirements, apiKey);
+    const resultOrTimeout = await Promise.race([repairPromise, timeoutPromise]);
+    clearTimeout(timer);
+
+    if (resultOrTimeout === 'TIMEOUT') {
+      console.warn('[SemanticRepair] Repair timed out after 10s — returning original text');
+      return generatedText;
+    }
+    afterAttempt1 = resultOrTimeout;
   } catch (err) {
-    if (err.code === 'NEEDS_REGENERATION') throw err;
     console.warn('[SemanticRepair] Attempt 1 non-fatal:', err.message);
+    if (err.code === 'NEEDS_REGENERATION') return generatedText;
   }
 
   const audit2 = await semanticAudit(afterAttempt1, requirements, apiKey);

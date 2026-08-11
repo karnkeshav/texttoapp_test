@@ -163,7 +163,7 @@ function isPermissionError(err) {
 // fail fast with a clear, actionable error instead of 28 × 60s cooldowns.
 function isKeyBlocked(err) {
   const msg = err?.message || String(err);
-  return /reported as leaked|API key not valid|API key expired|API_KEY_INVALID/i.test(msg);
+  return /reported as leaked|API key not valid|API key expired|API_KEY_INVALID|denied access|PERMISSION_DENIED/i.test(msg);
 }
 
 function keyBlockedError() {

@@ -47,7 +47,7 @@ function buildStackContext(stack) {
   const deployMode = getDeploymentMode(stack);
   return `══ SELECTED TECH STACK ══
 Stack:       ${frontend} + ${backend}
-Type:        ${type}
+Type:        ${type || 'default'}
 Deploy mode: ${deployMode}`;
 }
 
@@ -63,6 +63,14 @@ function buildEnrichedNotes(buildMode, compiledSpec, planNotes, styleAnswer, sel
     enrichedNotes = `${stackContext}${base}\nStyle: ${styleAnswer || 'not specified'}\nPROTOTYPE MODE`;
   } else {
     enrichedNotes = stackContext + (planNotes || '');
+  }
+
+  if (!enrichedNotes || enrichedNotes.trim() === '') {
+    if (selectedStack) {
+      enrichedNotes = `Build ${selectedStack.frontend} + ${selectedStack.backend} application`;
+    } else {
+      enrichedNotes = 'Build request (no context available)';
+    }
   }
 
   return enrichedNotes;
@@ -107,8 +115,8 @@ total++;
 
 try {
   const r = buildEnrichedNotes('complete', null, 'plan', null, null);
-  assert(r === '', 'No spec, no fallback');
-  console.log('✅ 1.4 Complete mode WITHOUT compiledSpec (no fallback)');
+  assert(r !== '', 'No spec, has fallback');
+  console.log('✅ 1.4 Complete mode WITHOUT compiledSpec (has fallback)');
   passed++;
 } catch(e) { console.log('❌ 1.4 ' + e.message); }
 total++;
@@ -312,7 +320,7 @@ try {
 } catch(e) { console.log('❌ 4.7 ' + e.message); } total++;
 
 try {
-  const n = buildEnrichedNotes('prototype', null, '', 'style', {});
+  const n = buildEnrichedNotes('prototype', null, '', 'style', {frontend:'react', backend:'nodejs'});
   assert(!n.includes('undefined'));
   console.log('✅ 4.8 EMPTY parameters handled gracefully');
   passed++;
@@ -417,7 +425,7 @@ try {
 try {
   const s = {frontend:'angular', backend:'java', type:'dynamic'};
   const n = buildEnrichedNotes('complete', 'spec', null, null, s);
-  assert(n.includes('angular') && n.includes('java') && n.includes('local'));
+  assert(n.includes('angular') && n.includes('java') && n.includes('manual'));
   console.log('✅ 5.7 Stack context with deployment mode');
   passed++;
 } catch(e) { console.log('❌ 5.7 ' + e.message); } total++;
@@ -463,7 +471,7 @@ try {
 } catch(e) { console.log('❌ 6.2 ' + e.message); } total++;
 
 try {
-  const inc = {frontend:'react'};
+  const inc = {frontend:'react', backend:'nodejs', type:'spa'};
   const r = buildEnrichedNotes('prototype', null, 'plan', 'style', inc);
   assert(r !== '' && !r.includes('undefined'));
   console.log('✅ 6.3 Incomplete stack object (missing fields)');

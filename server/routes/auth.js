@@ -121,7 +121,9 @@ router.get('/github/callback', async (req, res) => {
     // linkGitHub(...).catch(() => {});
 
     console.log(`[Auth] GitHub connected: ${githubUser.login}`);
-    res.redirect('/app');
+    const redirectTo = req.session.returnTo || '/';
+    delete req.session.returnTo;
+    res.redirect(redirectTo);
   } catch (err) {
     console.error('[Auth] GitHub callback error:', err.message);
     res.redirect('/?error=oauth_error');

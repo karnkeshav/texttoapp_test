@@ -104,19 +104,51 @@ Now execute the 6-step workflow and return perfect, tested, production-ready cod
       total: usage.total_tokens
     });
 
-    if (response.data.status !== 'completed') {
-      throw new Error(`Agent status: ${response.data.status}`);
+    if (response.data.status !== 'completed' && response.data.status !== 'success') {
+      console.warn('[AntigravityBuilder] Status warning:', response.data.status);
     }
 
-    // Extract output from steps
-    const steps = response.data.steps || [];
-    if (steps.length === 0) {
-      throw new Error('No output from agent');
+    // Extract output from steps, output, outputs, or candidates
+    let output = '';
+
+    if (typeof response.data.output === 'string' && response.data.output.trim()) {
+      output = response.data.output.trim();
     }
 
-    const output = steps[0]?.content?.[0]?.text || '';
+    if (!output && Array.isArray(response.data.outputs)) {
+      output = response.data.outputs
+        .map(o => (typeof o === 'string' ? o : o.text || o.content || ''))
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+    }
+
+    if (!output && Array.isArray(response.data.steps)) {
+      const parts = [];
+      for (const step of response.data.steps) {
+        if (typeof step === 'string') {
+          parts.push(step);
+        } else if (step.text) {
+          parts.push(step.text);
+        } else if (Array.isArray(step.content)) {
+          for (const c of step.content) {
+            if (typeof c === 'string') parts.push(c);
+            else if (c.text) parts.push(c.text);
+          }
+        } else if (step.output) {
+          parts.push(typeof step.output === 'string' ? step.output : JSON.stringify(step.output));
+        }
+      }
+      output = parts.filter(Boolean).join('\n\n').trim();
+    }
+
+    if (!output && response.data.candidates && Array.isArray(response.data.candidates)) {
+      output = response.data.candidates[0]?.content?.parts?.map(p => p.text).filter(Boolean).join('\n\n').trim() || '';
+    }
+
     if (!output) {
-      throw new Error('Empty output from agent');
+      console.warn('[AntigravityBuilder] Raw response object keys:', Object.keys(response.data));
+      throw new Error('Empty output from agent — API key may be blocked or invalid');
     }
 
     // Log audit result if present
@@ -133,7 +165,7 @@ Now execute the 6-step workflow and return perfect, tested, production-ready cod
     const status = err.response?.status || 'network error';
     const message = err.response?.data?.error?.message || err.message;
     console.error(`[AntigravityBuilder] ❌ Failed (${status}): ${message}`);
-    if (/reported as leaked|API key not valid|API key expired/i.test(message)) {
+    if (/reported as leaked|API key not valid|API key expired|blocked|Empty output/i.test(message)) {
       err.code = 'API_KEY_BLOCKED';
     }
     throw err;

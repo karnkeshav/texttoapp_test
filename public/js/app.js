@@ -109,19 +109,19 @@ async function loadUser() {
     const res  = await fetch('/auth/status');
     const data = await res.json();
 
-    if (!data.authenticated) {
-      // No session — guest user. Show Google sign-in prompt in sidebar, NOT GitHub connect.
+    if (!data.authenticated || !data.hasGitHub) {
+      // Show GitHub connection prompt in sidebar
       if (avatarEl) avatarEl.textContent = '⚡';
       if (nameEl)   nameEl.textContent   = 'Ready4Launch';
-      if (subEl)    subEl.textContent    = 'Sign in to get started';
+      if (subEl)    subEl.textContent    = 'Connect GitHub to deploy';
       if (ghBanner) {
         ghBanner.style.display = 'block';
         ghBanner.innerHTML = `
-          <div style="font-size:12px;font-weight:600;color:var(--purple-light);margin-bottom:4px;">👋 Welcome to Ready4Launch</div>
-          <div style="font-size:11px;color:var(--text-3);margin-bottom:10px;">Sign in with Google to build and deploy apps — free.</div>
-          <a href="/auth/google" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#fff;text-decoration:none;background:linear-gradient(135deg,#6366f1,#4f46e5);border-radius:7px;padding:6px 14px;">
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none"><path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4"/><path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853"/><path d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l3.66-2.84z" fill="#FBBC05"/><path d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z" fill="#EA4335"/></svg>
-            Sign in with Google
+          <div style="font-size:12px;font-weight:600;color:var(--purple-light);margin-bottom:4px;">⚡ Connect your GitHub Account</div>
+          <div style="font-size:11px;color:var(--text-3);margin-bottom:10px;">Connect GitHub to enable 1-click deployments to GitHub Pages and Vercel.</div>
+          <a href="/auth/github" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;color:#fff;text-decoration:none;background:linear-gradient(135deg,#24292e,#1f2328);border-radius:7px;padding:8px 16px;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+            Connect GitHub Account
           </a>`;
       }
       if (repoSection) repoSection.style.display = 'none';
@@ -665,7 +665,17 @@ async function sendMessage(buttonValue) {
         // Backend confirmed build — pass server-side repoName hint and dry-run result
         checkForCode(finalText.text, finalText.repoName, finalText.dryRun, finalText.deployMode);
       } else {
-        checkForCode(typeof finalText === 'string' ? finalText : finalText.text || '');
+        // The server only sets `.build` once real generated code is detected in the
+        // reply (see chat.js hasBuildOutput). Every other plain-text turn — stack
+        // confirmation, Q1-Q5 questions, chat/reasoning replies — must NOT be run
+        // through checkForCode(), whose failsafe wraps any non-empty text into a
+        // fake index.html and pops the deploy/APK buttons. Only fall back to
+        // detection here if the text itself carries the REPO_NAME marker that
+        // real build output always starts with.
+        const text = typeof finalText === 'string' ? finalText : finalText.text || '';
+        if (/REPO_NAME\s*:/i.test(text)) {
+          checkForCode(text);
+        }
       }
     }
   } catch (err) {
@@ -769,30 +779,39 @@ function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
 
   const files = [];
 
-  // ── Multi-file format: each block starts with a FILE: path comment ──
-  // Matches ```html, ```css, ```javascript, ```js code blocks
-  const BLOCK_RE = /```(html|css|javascript|js|json|typescript|ts|bash|sh|yaml|yml|env)\s*([\s\S]*?)```/gi;
-  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*)([^\s*>]+)/i;
+  // ── Multi-file format: match ALL code blocks with any language tag ──
+  const BLOCK_RE = /```([a-zA-Z0-9_-]*)\s*([\s\S]*?)```/gi;
+  const FILE_COMMENT_RE = /^(?:<!--\s*FILE:\s*|\/\*\s*FILE:\s*|\/\/\s*FILE:\s*|#\s*FILE:\s*|\/\/\s*|\/\*\s*|<!--\s*|#\s*|FILE:\s*)([a-zA-Z0-9_.\-\/]+\.[a-zA-Z0-9]+)/i;
 
   let blockMatch;
+  let blockIdx = 0;
   while ((blockMatch = BLOCK_RE.exec(text)) !== null) {
-    const lang    = blockMatch[1].toLowerCase();
+    blockIdx++;
+    const lang    = (blockMatch[1] || '').toLowerCase();
     const content = blockMatch[2].trim();
     if (!content || content.length < 10) continue;
 
     const firstLine = content.split('\n')[0];
     const pathMatch = FILE_COMMENT_RE.exec(firstLine);
 
-    if (pathMatch) {
+    if (pathMatch && pathMatch[1] && pathMatch[1].includes('.')) {
       // Strip the FILE: comment from the body
       const body = content.split('\n').slice(1).join('\n').trim();
-      if (body.length >= 10) files.push({ path: pathMatch[1], content: body });
+      if (body.length >= 5) files.push({ path: pathMatch[1], content: body });
     } else {
-      // No FILE: marker — fallback: use default path per language (legacy / single-file AI)
-      const defaultPath = lang === 'html' ? 'index.html'
-        : lang === 'css'                  ? 'css/style.css'
-        :                                   'js/app.js';
-      if (!files.find(f => f.path === defaultPath) && content.length >= 50) {
+      // Smart default path based on language & content
+      let defaultPath = `file-${blockIdx}.${lang || 'txt'}`;
+      if (lang === 'html' || content.includes('<!DOCTYPE') || content.includes('<html')) defaultPath = 'index.html';
+      else if (lang === 'css') defaultPath = 'public/css/style.css';
+      else if (lang === 'json' || (content.includes('"name"') && content.includes('"dependencies"'))) defaultPath = 'package.json';
+      else if (lang === 'go' || content.includes('package main')) defaultPath = 'main.go';
+      else if (lang === 'python' || lang === 'py' || content.includes('def main') || content.includes('import flask')) defaultPath = 'main.py';
+      else if (lang === 'js' || lang === 'javascript' || lang === 'ts' || lang === 'typescript') {
+        if (content.includes('express') || content.includes('require(') || content.includes('listen(')) defaultPath = 'server.js';
+        else defaultPath = 'public/js/app.js';
+      }
+
+      if (!files.find(f => f.path === defaultPath) && content.length >= 20) {
         files.push({ path: defaultPath, content });
       }
     }
@@ -800,12 +819,12 @@ function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
 
   // ── Fallback: truncated response — no closing ```, but HTML present ──
   if (!files.length) {
-    const truncatedMatch = text.match(/```html\s*([\s\S]*?<\/html>)/i);
+    const truncatedMatch = text.match(/```(?:html)?\s*([\s\S]*?<\/html>)/i);
     if (truncatedMatch) {
       const content   = truncatedMatch[1].trim();
       const firstLine = content.split('\n')[0];
       const pathMatch = FILE_COMMENT_RE.exec(firstLine);
-      if (pathMatch) {
+      if (pathMatch && pathMatch[1] && pathMatch[1].includes('.')) {
         files.push({ path: pathMatch[1], content: content.split('\n').slice(1).join('\n').trim() });
       } else {
         files.push({ path: 'index.html', content });
@@ -814,9 +833,15 @@ function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
     }
   }
 
-  if (!files.length) return; // nothing useful to deploy
+  // ── Ultimate Failsafe: if text exists, guarantee at least one file so buttons render ──
+  if (!files.length && text && text.trim().length > 30) {
+    files.push({ path: 'index.html', content: text });
+    console.warn('[Ready4Launch] Failsafe activated: wrapped output in index.html');
+  }
 
-  showDeployPrompt(repoName, files, dryRun, deployMode, editContext);
+  if (!files.length) return;
+
+  showDeployPrompt(repoName, files, dryRun, deployMode || 'local', editContext);
 }
 
 // ── Download options card (conversion mode) ──────────────────────
@@ -1090,15 +1115,55 @@ function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
   if (isEditMode) {
     ctaLabel = '🔄 Update & Push Changes';
     ctaDesc  = `Your modifications are ready. Push the updated code back to <strong>${editContext.editOwner}/${editContext.editRepo}</strong>.`;
-  } else if (deployMode === 'local') {
-    ctaLabel = '🚀 Push to GitHub + Launch Locally';
-    ctaDesc  = `Ready4Launch will push your code to <strong>${repoName}</strong>, then automatically start the app in a new terminal window.`;
-  } else if (deployMode === 'manual') {
-    ctaLabel = '📁 Push to GitHub';
-    ctaDesc  = `Your code will be pushed to <strong>${repoName}</strong>. Check the README for setup instructions specific to your stack.`;
+  }
+  let actionButtons = '';
+  const androidPromptId = `apk-${fileId}`;
+  const encodedRepo = encodeURIComponent(repoName);
+  const encodedName = encodeURIComponent(repoName.replace(/[-_]/g, ' '));
+  const encodedUrl  = encodeURIComponent(`http://localhost:3000`);
+
+  const apkButton = `
+    <button onclick="buildAndroidApk('${androidPromptId}', '${encodedRepo}', '${encodedName}', '${encodedUrl}')"
+            style="background:rgba(34,197,94,0.15);color:#4ade80;border:1px solid rgba(34,197,94,0.4);border-radius:10px;padding:12px 18px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font-family:var(--font);">
+      📱 Build Android App (APK)
+    </button>`;
+
+  const vercelButton = `
+    <button onclick="deployToVercel('${encodedRepo}')"
+            style="background:#000;color:#fff;border:1px solid #333;border-radius:10px;padding:12px 18px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font-family:var(--font);">
+      ▲ Deploy to Vercel
+    </button>`;
+
+  if (deployMode === 'local') {
+    ctaLabel = '🚀 Push to GitHub + Launch';
+    ctaDesc  = `Ready4Launch can run your app directly on <strong>localhost</strong> via PowerShell/bash, build an Android APK, deploy to Vercel, or push to GitHub.`;
+    actionButtons = `
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;">
+        <button data-fileid="${fileId}" onclick="launchDirectlyLocal(this.dataset.fileid, this)"
+                style="background:linear-gradient(135deg,#0ea5e9,#0284c7);color:#fff;border:none;border-radius:10px;padding:12px 20px;font-size:14px;font-weight:700;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font-family:var(--font);">
+          ▶ Launch Directly on Localhost (No GitHub Required)
+        </button>
+        ${apkButton}
+        ${vercelButton}
+        <button data-fileid="${fileId}" onclick="deployToGitHub(this.dataset.fileid, this)"
+                style="background:none;border:1px solid var(--border);color:var(--text-2);border-radius:10px;padding:12px 18px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font-family:var(--font);">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          ${ctaLabel}
+        </button>
+      </div>
+      <div id="${androidPromptId}" style="margin-top:10px;"></div>`;
   } else {
-    ctaLabel = '🌐 Deploy to GitHub Pages';
-    ctaDesc  = `Ready4Launch will create <strong>${repoName}</strong>, push your code, and enable GitHub Pages — your site will be live in ~2 minutes.`;
+    actionButtons = `
+      <div style="display:flex;flex-wrap:wrap;gap:10px;margin-top:12px;">
+        <button data-fileid="${fileId}" onclick="deployToGitHub(this.dataset.fileid, this)"
+                style="background:var(--grad-main);color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:8px;font-family:var(--font);">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+          ${ctaLabel}
+        </button>
+        ${apkButton}
+        ${vercelButton}
+      </div>
+      <div id="${androidPromptId}" style="margin-top:10px;"></div>`;
   }
 
   div.innerHTML = `
@@ -1106,15 +1171,35 @@ function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
       <div style="font-size:16px;font-weight:700;margin-bottom:8px;">🚀 Your app is ready!</div>
       ${dryRunBadge}
       <p style="font-size:14px;color:var(--text-2);margin-bottom:16px;">${ctaDesc}</p>
-      <button data-fileid="${fileId}" onclick="deployToGitHub(this.dataset.fileid, this)"
-              style="background:var(--grad-main);color:#fff;border:none;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px;font-family:var(--font);">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
-        ${ctaLabel}
-      </button>
+      ${actionButtons}
     </div>
   `;
   container.appendChild(div);
   scrollToBottom();
+}
+
+async function launchDirectlyLocal(fileId, btn) {
+  const pending = pendingFiles.get(fileId);
+  if (!pending) return;
+  const { repoName, files, stack } = pending;
+  const rlId = `rl-${fileId}`;
+
+  btn.disabled = true;
+  btn.innerHTML = '⚡ Starting server on localhost…';
+
+  const container = btn.parentElement.parentElement;
+  const runnerDiv = document.createElement('div');
+  runnerDiv.id = rlId;
+  runnerDiv.style.cssText = 'margin-top:16px;background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:16px;';
+  runnerDiv.innerHTML = `
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px;">▶ Local Server Log</div>
+    <div id="${rlId}-log" style="background:#000;color:#22c55e;font-family:monospace;font-size:12px;padding:12px;border-radius:8px;height:120px;overflow-y:auto;white-space:pre-wrap;">
+      Writing local files and launching server…
+    </div>`;
+  container.appendChild(runnerDiv);
+
+  runLocalState.set(rlId, { repoName, files, stack });
+  runLocally(rlId);
 }
 
 async function deployToGitHub(fileId, btn) {
@@ -1472,7 +1557,7 @@ function showSignInWall() {
   const subtext = sessionExpired
     ? 'Your session has expired — this usually happens after a server restart. Please sign in again to continue.'
     : 'Create a free account to build and deploy apps with Ready4Launch.';
-  const btnLabel = sessionExpired ? 'Sign in again with Google' : 'Continue with Google';
+  const btnLabel = sessionExpired ? 'Connect GitHub again' : 'Connect with GitHub';
 
   const overlay = document.createElement('div');
   overlay.id = 'r4l-modal-overlay';
@@ -1482,8 +1567,8 @@ function showSignInWall() {
       <div style="font-size:40px;margin-bottom:16px;">${icon}</div>
       <h2 style="font-size:22px;font-weight:700;margin-bottom:10px;">${heading}</h2>
       <p style="color:var(--text-2);font-size:15px;margin-bottom:28px;">${subtext}</p>
-      <a href="/auth/google" style="display:inline-flex;align-items:center;gap:10px;background:#fff;color:#333;border:1px solid #ddd;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:12px;width:100%;justify-content:center;">
-        <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
+      <a href="/auth/github" style="display:inline-flex;align-items:center;gap:10px;background:#24292e;color:#fff;border:1px solid #333;border-radius:10px;padding:12px 24px;font-size:15px;font-weight:600;text-decoration:none;margin-bottom:12px;width:100%;justify-content:center;">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
         ${btnLabel}
       </a>
       <button onclick="removeModal()" style="background:transparent;border:none;color:var(--text-3);font-size:13px;cursor:pointer;margin-top:4px;">Maybe later</button>
@@ -1894,13 +1979,21 @@ async function buildAndroidApk(promptId, repoName, encodedAppName, encodedPagesU
   }
   scrollToBottom();
 }
+
+function deployToVercel(encodedRepo) {
+  const repoName = decodeURIComponent(encodedRepo);
+  const owner = window.currentUser?.login || 'karnkeshav';
+  const vercelUrl = `https://vercel.com/new/clone?repository-url=https://github.com/${owner}/${repoName}`;
+  window.open(vercelUrl, '_blank');
+}
+
 // ── Stack selector UI ─────────────────────────────────────────────
 
 const STACK_OPTIONS = {
   frontend: [
     { id: 'html',    label: 'HTML / CSS / Vanilla JS', backends: ['none'] },
-    { id: 'react',   label: 'React', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
-    { id: 'vue',     label: 'Vue.js', backends: ['none', 'nodejs', 'python', 'java', 'go'] },
+    { id: 'react',   label: 'React', backends: ['none', 'nodejs', 'python', 'java', 'csharp', 'php', 'go', 'ruby', 'rust'] },
+    { id: 'vue',     label: 'Vue.js', backends: ['none', 'nodejs', 'python', 'java', 'csharp', 'php', 'go', 'ruby', 'rust'] },
     { id: 'angular', label: 'Angular', backends: ['nodejs', 'java', 'csharp', 'python'] },
     { id: 'svelte',  label: 'Svelte', backends: ['nodejs', 'python', 'go'] },
     { id: 'nextjs',  label: 'Next.js', backends: ['nodejs'] },
@@ -1911,10 +2004,10 @@ const STACK_OPTIONS = {
     { id: 'nodejs',   label: 'Node.js + Express' },
     { id: 'python',   label: 'Python (FastAPI / Flask)' },
     { id: 'java',     label: 'Java (Spring Boot)' },
-    { id: 'csharp',   label: 'C# (.NET)' },
-    { id: 'php',      label: 'PHP (Laravel)' },
+    { id: 'csharp',   label: 'C# (ASP.NET Core)' },
+    { id: 'php',      label: 'PHP' },
     { id: 'go',       label: 'Go' },
-    { id: 'ruby',     label: 'Ruby on Rails' },
+    { id: 'ruby',     label: 'Ruby (Sinatra)' },
     { id: 'rust',     label: 'Rust' },
   ],
   type: [
@@ -2068,8 +2161,8 @@ function renderStackSelector(aiMsgId) {
 // ── Stack validation rules ────────────────────────────────────────
 const STACK_COMPATIBILITY = {
   html:    { backends: ['none'], types: ['static', 'jamstack'] },
-  react:   { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
-  vue:     { backends: ['none', 'nodejs', 'python', 'java', 'go'], types: ['spa', 'dynamic', 'pwa'] },
+  react:   { backends: ['none', 'nodejs', 'python', 'java', 'csharp', 'php', 'go', 'ruby', 'rust'], types: ['spa', 'dynamic', 'pwa'] },
+  vue:     { backends: ['none', 'nodejs', 'python', 'java', 'csharp', 'php', 'go', 'ruby', 'rust'], types: ['spa', 'dynamic', 'pwa'] },
   angular: { backends: ['nodejs', 'java', 'csharp', 'python'], types: ['spa', 'dynamic'] },
   svelte:  { backends: ['nodejs', 'python', 'go'], types: ['spa', 'dynamic', 'pwa'] },
   nextjs:  { backends: ['nodejs'], types: ['ssr', 'dynamic'] },
@@ -2078,8 +2171,8 @@ const STACK_COMPATIBILITY = {
 
 const BACKEND_FOR_FRONTEND = {
   html:    'Static (no backend needed)',
-  react:   'Optional (Node.js, Python, Java, Go)',
-  vue:     'Optional (Node.js, Python, Java, Go)',
+  react:   'Optional (Node.js, Python, Java, C#, PHP, Go, Ruby, Rust)',
+  vue:     'Optional (Node.js, Python, Java, C#, PHP, Go, Ruby, Rust)',
   angular: 'Required (Node.js, Java, C#, Python)',
   svelte:  'Optional (Node.js, Python, Go)',
   nextjs:  'Required (Node.js only)',
@@ -2200,7 +2293,12 @@ async function runLocally(rlId) {
     const res = await fetch('/api/run-local', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ cloneUrl: state.cloneUrl, repoName: state.repoName, stack: state.stack }),
+      body: JSON.stringify({
+        cloneUrl: state.cloneUrl,
+        repoName: state.repoName,
+        stack: state.stack,
+        files: state.files,
+      }),
     });
 
     if (!res.ok) {

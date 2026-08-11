@@ -136,6 +136,25 @@ async function detectStackFromCode(htmlCode, token, owner, repo) {
         }
       }
 
+      // STEP 1F: Check for Ruby backend (Gemfile)
+      if (backend === 'none') {
+        const gemfile = await getFileContent(token, owner, repo, 'Gemfile');
+        if (gemfile) {
+          backend = 'ruby';
+          console.log('[StackDetect] Ruby backend detected: found Gemfile');
+        }
+      }
+
+      // STEP 1G: Check for PHP backend (index.php, composer.json)
+      if (backend === 'none') {
+        const indexPhp = await getFileContent(token, owner, repo, 'index.php');
+        const composerJson = await getFileContent(token, owner, repo, 'composer.json');
+        if (indexPhp || composerJson) {
+          backend = 'php';
+          console.log('[StackDetect] PHP backend detected: found index.php/composer.json');
+        }
+      }
+
     }
   } catch (e) {
     console.log('[StackDetect] Error during backend detection:', e.message);
@@ -226,15 +245,47 @@ const COMPLETE_QUESTIONS = [
   `**Question 3 of 5 — Must-have features:** List the 3–5 features that absolutely must work at launch. Anything that's nice-to-have but not critical? (Say "none" for the optional part if you prefer.)`,
 
   `**Question 4 of 5 — Technical needs:** Any specific requirements?
-• Should it save data between visits (localStorage)?
-• Mobile-first or desktop-first?
-• Need to export/import data (CSV, PDF)?
-• Any third-party integrations?
+1. Save data between visits (localStorage)
+2. Mobile-first or desktop-first layout
+3. Export/import data (CSV, PDF)
+4. Third-party API integrations
 
-(Just say "none" if nothing applies)`,
+(Reply with numbers e.g. 1, 3 or say "none" if nothing applies)`,
 
   `**Question 5 of 5 — Style & feel:** Last one! Dark or light? Minimal or bold? Elegant or playful? Name a colour palette, a brand you like, or describe the mood — even rough ideas help.`,
 ];
+
+function expandNumberedAnswer(qText, aText) {
+  if (!qText || !aText) return aText;
+  const numbers = aText.match(/\b\d+\b/g);
+  if (!numbers || numbers.length === 0) return aText;
+
+  const lines = qText.split('\n');
+  const optionMap = {};
+  for (const line of lines) {
+    const m = line.match(/^(?:(?:\d+\.|[•\-\*]))?\s*(\d+)[\.\)]\s*(.+)/);
+    if (m) {
+      optionMap[m[1]] = m[2].trim().replace(/^[*_\s#]+|[*_\s#]+$/g, '');
+    } else {
+      const m2 = line.match(/^(\d+)[\.\)]\s*(.+)/);
+      if (m2) {
+        optionMap[m2[1]] = m2[2].trim().replace(/^[*_\s#]+|[*_\s#]+$/g, '');
+      }
+    }
+  }
+
+  if (Object.keys(optionMap).length === 0) return aText;
+
+  const expanded = numbers
+    .map(n => optionMap[n] ? `Option ${n}: ${optionMap[n]}` : null)
+    .filter(Boolean);
+
+  if (expanded.length > 0) {
+    return `${aText} -> [${expanded.join('; ')}]`;
+  }
+
+  return aText;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────
 const FRAMEWORK_RE = /\b(react|vue|angular|next\.?js|nuxt\.?js|svelte|gatsby|remix|typescript|webpack|vite)\b/i;
@@ -532,12 +583,12 @@ function detectBuildMode(answer) {
 function defaultStyleQuestion() {
   return `One quick thing — what vibe are you going for? 🎨
 
-• 🖤 Dark & Sleek (black + purple/blue)
-• ☀️ Light & Clean (white + blue/green)
-• ⚡ Bold & Energetic (dark bg + vivid accent)
-• 🎯 Minimal Pro (neutral tones, subtle accent)
+1. 🖤 Dark & Sleek (black + purple/blue)
+2. ☀️ Light & Clean (white + blue/green)
+3. ⚡ Bold & Energetic (dark bg + vivid accent)
+4. 🎯 Minimal Pro (neutral tones, subtle accent)
 
-Or just describe your own — colours, a brand you like, any mood words. Anything helps!`;
+Reply with a number (1-4) or describe your own colours/brand. Anything helps!`;
 }
 
 // No authentication required — chat, analyse, and convert are open to all visitors.
@@ -1329,9 +1380,10 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       // Use stack-specific questions if a stack was selected, otherwise fallback to generic
       const questions = req.session.stackQuestions || COMPLETE_QUESTIONS;
 
-      // Save answer for the current question
+      // Save answer for the current question (expand numbers like 1, 4 to full option text)
       const currentQ = questions[req.session.questionIndex];
-      req.session.gatheredAnswers.push({ q: currentQ, a: trimmedMessage });
+      const expandedA = expandNumberedAnswer(currentQ, trimmedMessage);
+      req.session.gatheredAnswers.push({ q: currentQ, a: expandedA });
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
       req.session.questionIndex++;
 
@@ -1521,14 +1573,22 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       console.log('[Chat] ✅ Antigravity build complete');
     } catch (buildErr) {
       const errMsg = buildErr.response?.data?.error?.message || buildErr.message;
-      console.error('[Chat] ❌ Antigravity build failed:', errMsg);
-      const keyBlocked = buildErr.code === 'API_KEY_BLOCKED' || /leaked|API key not valid|API key expired/i.test(errMsg);
-      sendEvent('error', {
-        message: keyBlocked
-          ? 'The server\'s Gemini API key is blocked. Ask the operator to create a NEW key in Google AI Studio (regenerating the old one keeps the block), update .env, and restart.'
-          : 'Code generation failed. Please try again or simplify your feature list.'
-      });
-      return res.end();
+      console.warn('[Chat] ⚠️ Antigravity builder unavailable, falling back to multi-provider AI pool:', errMsg);
+      sendEvent('status', { message: 'Building your app via multi-provider AI pool…' });
+
+      try {
+        await antigravity.streamChat(processedMessage, buildHistory, null, onChunk, onDone, activeBrief, 'build');
+        finalText = capturedText;
+      } catch (poolErr) {
+        console.error('[Chat] ❌ Multi-provider pool generation failed:', poolErr.message);
+        const keyBlocked = buildErr.code === 'API_KEY_BLOCKED' || /leaked|API key not valid|API key expired/i.test(errMsg);
+        sendEvent('error', {
+          message: keyBlocked
+            ? 'The server\'s Gemini API key is blocked. Ask the operator to create a NEW key in Google AI Studio, update .env, and restart.'
+            : 'Code generation failed: ' + poolErr.message
+        });
+        return res.end();
+      }
     }
 
     if (!finalText) {
@@ -1537,10 +1597,11 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     }
 
     // Antigravity handles all verification internally, but run optional dry check if stack known
+    let dryResult = null;
     if (req.session.selectedStack) {
       try {
         const extractedFiles = extractFilesFromText(finalText);
-        const dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
+        dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
         if (!dryResult.passed) {
           console.warn('[DryRun] Note: Some issues remain, but Antigravity self-repaired. Proceeding.', dryResult.summary);
           sendEvent('status', { message: 'Build complete (note: some minor issues remain)' });

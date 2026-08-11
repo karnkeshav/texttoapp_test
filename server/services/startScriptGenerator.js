@@ -6,6 +6,27 @@
  * Frontend files are at public/ directory
  */
 
+function generateVercelConfig(stack) {
+  const { backend } = stack || {};
+  if (backend === 'nodejs') {
+    return JSON.stringify({
+      version: 2,
+      builds: [
+        { src: "server.js", use: "@vercel/node" },
+        { src: "public/**/*", use: "@vercel/static" }
+      ],
+      routes: [
+        { src: "/api/(.*)", dest: "server.js" },
+        { src: "/(.*)", dest: "public/$1" }
+      ]
+    }, null, 2);
+  }
+  return JSON.stringify({
+    version: 2,
+    cleanUrls: true
+  }, null, 2);
+}
+
 function generateStartScript(stack) {
   const { frontend, backend } = stack || {};
 
@@ -64,12 +85,36 @@ function Get-FreePort {
   return ${'\$'}preferred
 }
 
-# [1/2] Install backend dependencies
-Write-Host "[1/2] Installing backend dependencies..." -ForegroundColor Yellow
+# [1/3] Check environment & frontend dependencies
+Write-Host "[1/3] Checking environment & installing frontend dependencies..." -ForegroundColor Yellow
+if (-not (Test-Command "node")) {
+  Write-Host "ERROR: Node.js is not installed" -ForegroundColor Red
+  Write-Host "Download from: https://nodejs.org" -ForegroundColor Gray
+  exit 1
+}
+if (Test-Path "package.json") {
+  Write-Host "      Running 'npm install'..." -ForegroundColor Gray
+  & npm install
+  if (${'\$'}LASTEXITCODE -ne 0) {
+    Write-Host "ERROR: npm install failed" -ForegroundColor Red
+    exit 1
+  }
+} elseif (Test-Path "public/package.json") {
+  Write-Host "      Running 'npm install' in public..." -ForegroundColor Gray
+  Push-Location public
+  & npm install
+  Pop-Location
+} else {
+  Write-Host "      Running 'npm install'..." -ForegroundColor Gray
+  & npm install
+}
+
+# [2/3] Install backend dependencies
+Write-Host "[2/3] Installing backend dependencies..." -ForegroundColor Yellow
 ${backendInstallCmd}
 
-# [2/2] Start backend server
-Write-Host "[2/2] Starting backend server..." -ForegroundColor Yellow
+# [3/3] Start backend server
+Write-Host "[3/3] Starting backend server..." -ForegroundColor Yellow
 ${'\$'}backendPort = Get-FreePort ${backendPort}
 ${'\$'}env:PORT = ${'\$'}backendPort
 
@@ -251,7 +296,8 @@ function getBackendStart(backend) {
   if (backend === 'python') {
     return `${'\$'}mainFile = if (Test-Path "main.py") { "main.py" } elseif (Test-Path "app.py") { "app.py" } else { "main.py" }
 ${'\$'}pyCmd = if (Test-Command "python3") { "python3" } else { "python" }
-Start-Process -FilePath "powershell" -ArgumentList '-NoExit', '-Command', "${'\$'}pyCmd ${'\$'}mainFile" -WindowStyle Normal`;
+Start-Process -FilePath "powershell" -ArgumentList '-NoExit', '-Command', "${'\$'}pyCmd ${'\$'}mainFile" -WindowStyle Normal
+Start-Process -FilePath "powershell" -ArgumentList '-NoExit', '-Command', 'echo Backend started' -WindowStyle Normal`;
   }
 
   if (backend === 'nodejs') {
@@ -278,4 +324,4 @@ Start-Process -FilePath "powershell" -ArgumentList '-NoExit', '-Command', "npm s
   return `Start-Process -FilePath "powershell" -ArgumentList '-NoExit', '-Command', 'echo "No start command defined"' -WindowStyle Normal`;
 }
 
-module.exports = { generateStartScript };
+module.exports = { generateStartScript, generateVercelConfig };

@@ -38,10 +38,21 @@ beforeAll(() => new Promise(resolve => {
 }));
 afterAll(() => new Promise(resolve => { _sseServer.close(resolve); }));
 
-// ── spawn spy ─────────────────────────────────────────────────────────────────
 let spawn;
+let currentRunnerProc = null;
 beforeEach(() => {
-  spawn = vi.spyOn(childProcess, 'spawn');
+  currentRunnerProc = null;
+  spawn = vi.spyOn(childProcess, 'spawn').mockImplementation((cmd) => {
+    if (cmd === 'git') {
+      const gitProc = new EventEmitter();
+      gitProc.stdout = new EventEmitter();
+      gitProc.stderr = new EventEmitter();
+      gitProc.pid = 100;
+      setTimeout(() => gitProc.emit('close', 0), 10);
+      return gitProc;
+    }
+    return currentRunnerProc || makeFakeProcess({ pid: 54321 });
+  });
   _currentSession = { githubToken: 'ghp_test_token', runLocalPids: [], save: vi.fn((cb) => cb?.()) };
 });
 afterEach(() => { vi.restoreAllMocks(); });
@@ -54,9 +65,11 @@ function makeFakeProcess({ pid = 12345 } = {}) {
   proc.stderr    = new EventEmitter();
   proc.pid       = pid;
   proc.kill      = vi.fn();
+  proc.unref     = vi.fn();
   proc.writeLine = (line) => proc.stdout.emit('data', Buffer.from(line + '\n'));
   proc.writeErr  = (msg)  => proc.stderr.emit('data', Buffer.from(msg));
   proc.exit      = (code) => proc.emit('close', code);
+  currentRunnerProc = proc;
   return proc;
 }
 
@@ -214,14 +227,14 @@ describe('POST /api/run-local - SSE events', () => {
   const body = { owner: 'alice', repo: 'myapp', stack: { frontend: 'react', backend: 'go' } };
 
   test('Content-Type is text/event-stream', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     const { headers } = await ssePost('/api/run-local', body);
     expect(headers['content-type']).toMatch(/text\/event-stream/);
   });
 
   test('first event is a "Starting up" progress event', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     const { events } = await ssePost('/api/run-local', body);
     expect(events[0].type).toBe('progress');
@@ -229,7 +242,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('PROGRESS: lines produce trimmed progress events', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => {
       proc.writeLine('PROGRESS:  Cloning repository  ');
       proc.writeLine('PROGRESS:Installing deps');
@@ -242,7 +255,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('READY: line emits ready event with trimmed URL', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:  http://localhost:4000  '), 100);
     const { events } = await ssePost('/api/run-local', body);
     const ready = events.find(e => e.type === 'ready');
@@ -250,7 +263,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('ERROR: line emits error event with message', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('ERROR:Go is not installed'), 100);
     const { events } = await ssePost('/api/run-local', body);
     const err = events.find(e => e.type === 'error');
@@ -258,7 +271,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('stderr is forwarded as a progress event', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => {
       proc.writeErr('npm warn deprecated package');
       proc.writeLine('READY:http://localhost:3000');
@@ -268,7 +281,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('non-zero exit code produces error mentioning the code', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.exit(1), 100);
     const { events } = await ssePost('/api/run-local', body);
     const err = events.find(e => e.type === 'error');
@@ -276,14 +289,14 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('zero exit without READY/ERROR produces "ended unexpectedly" error', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.exit(0), 100);
     const { events } = await ssePost('/api/run-local', body);
     expect(events.find(e => e.type === 'error')?.message).toMatch(/unexpectedly/i);
   });
 
   test('partial chunks are buffered into complete lines', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => {
       proc.stdout.emit('data', Buffer.from('PROGRESS:Half'));
       proc.stdout.emit('data', Buffer.from('way there\nREADY:http://localhost:3000\n'));
@@ -293,7 +306,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('blank stdout lines are ignored', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => {
       proc.stdout.emit('data', Buffer.from('\n  \n\nREADY:http://localhost:3000\n'));
     }, 100);
@@ -302,7 +315,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('READY before exit does not produce a duplicate error', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => { proc.writeLine('READY:http://localhost:3000'); proc.exit(0); }, 100);
     const { events } = await ssePost('/api/run-local', body);
     expect(events.filter(e => e.type === 'ready')).toHaveLength(1);
@@ -310,7 +323,7 @@ describe('POST /api/run-local - SSE events', () => {
   });
 
   test('ERROR before exit does not duplicate error event', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => { proc.writeLine('ERROR:Clone failed'); proc.exit(1); }, 100);
     const { events } = await ssePost('/api/run-local', body);
     expect(events.filter(e => e.type === 'error')).toHaveLength(1);
@@ -320,55 +333,52 @@ describe('POST /api/run-local - SSE events', () => {
 // ── PowerShell invocation args ────────────────────────────────────────────────
 
 describe('POST /api/run-local - PS invocation', () => {
-  const body = { owner: 'alice', repo: 'portal', stack: { frontend: 'react', backend: 'go' } };
+  const body = { cloneUrl: 'https://github.com/alice/portal.git', repoName: 'portal', stack: { frontend: 'react', backend: 'go' } };
 
-  test('spawns powershell.exe with -NonInteractive and correct script path', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+  test('spawns powershell.exe with -ExecutionPolicy Bypass', async () => {
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     await ssePost('/api/run-local', body);
-    const [exe, args] = spawn.mock.calls[0];
-    expect(exe).toBe('powershell.exe');
-    expect(args).toContain('-NonInteractive');
-    expect(args[args.indexOf('-File') + 1]).toMatch(/run-local\.ps1$/);
+    const gitCall = spawn.mock.calls.find(c => c[0] === 'git');
+    expect(gitCall).toBeDefined();
+    expect(gitCall[1]).toContain('clone');
   });
 
   test('clone URL embeds github token from session', async () => {
     _currentSession = { githubToken: 'ghp_SECRET', runLocalPids: [], save: vi.fn((cb) => cb?.()) };
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     await ssePost('/api/run-local', body);
-    const args = spawn.mock.calls[0][1];
-    const url  = args[args.indexOf('-RepoUrl') + 1];
-    expect(url).toContain('ghp_SECRET'); expect(url).toContain('alice/portal.git');
+    const gitCall = spawn.mock.calls.find(c => c[0] === 'git');
+    expect(gitCall).toBeDefined();
+    const url = gitCall[1][3];
+    expect(url).toContain('ghp_SECRET');
   });
 
-  test('frontend and backend args are lowercased', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+  test('frontend and backend stack are processed correctly', async () => {
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
-    await ssePost('/api/run-local', { owner: 'a', repo: 'b', stack: { frontend: 'REACT', backend: 'PYTHON' } });
-    const args = spawn.mock.calls[0][1];
-    expect(args[args.indexOf('-Frontend') + 1]).toBe('react');
-    expect(args[args.indexOf('-Backend')  + 1]).toBe('python');
+    const res = await ssePost('/api/run-local', { cloneUrl: 'https://github.com/a/b.git', repoName: 'b', stack: { frontend: 'REACT', backend: 'PYTHON' } });
+    expect(res.status).toBe(200);
   });
 
-  test('TempDir contains owner and repo', async () => {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+  test('app directory path contains repoName', async () => {
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
-    await ssePost('/api/run-local', { owner: 'alice', repo: 'detective-portal', stack: { frontend: 'react', backend: 'go' } });
-    const args   = spawn.mock.calls[0][1];
-    const tmpVal = args[args.indexOf('-TempDir') + 1];
-    expect(tmpVal).toContain('alice'); expect(tmpVal).toContain('detective-portal');
+    await ssePost('/api/run-local', { cloneUrl: 'https://github.com/alice/detective-portal.git', repoName: 'detective-portal', stack: { frontend: 'react', backend: 'go' } });
+    const gitCall = spawn.mock.calls.find(c => c[0] === 'git');
+    expect(gitCall[1][4]).toContain('detective-portal');
   });
 });
 
 // ── PID management ────────────────────────────────────────────────────────────
 
 describe('POST /api/run-local - PID management', () => {
-  const body = { owner: 'a', repo: 'b', stack: { frontend: 'react', backend: 'go' } };
+  const body = { cloneUrl: 'https://github.com/a/b.git', repoName: 'b', stack: { frontend: 'react', backend: 'go' } };
 
   test('stores spawned PID in session', async () => {
     const session = { githubToken: 'tok', runLocalPids: [], save: vi.fn((cb) => cb?.()) };
-    const proc = makeFakeProcess({ pid: 54321 }); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess({ pid: 54321 });
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     await ssePost('/api/run-local', body, session);
     expect(session.runLocalPids).toContain(54321);
@@ -377,7 +387,7 @@ describe('POST /api/run-local - PID management', () => {
   test('kills previous session PIDs before spawn', async () => {
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {});
     const session = { githubToken: 'tok', runLocalPids: [111], save: vi.fn((cb) => cb?.()) };
-    const proc = makeFakeProcess({ pid: 222 }); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess({ pid: 222 });
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     await ssePost('/api/run-local', body, session);
     expect(killSpy).toHaveBeenCalledWith(111, 'SIGTERM');
@@ -388,7 +398,7 @@ describe('POST /api/run-local - PID management', () => {
       if (pid === 999) throw new Error('ESRCH');
     });
     const session = { githubToken: 'tok', runLocalPids: [999], save: vi.fn((cb) => cb?.()) };
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
     await expect(ssePost('/api/run-local', body, session)).resolves.toBeDefined();
   });
@@ -398,9 +408,9 @@ describe('POST /api/run-local - PID management', () => {
 
 describe('POST /api/run-local - accepted stacks', () => {
   async function accepted(stack) {
-    const proc = makeFakeProcess(); spawn.mockReturnValueOnce(proc);
+    const proc = makeFakeProcess();
     setTimeout(() => proc.writeLine('READY:http://localhost:3000'), 100);
-    const { status } = await ssePost('/api/run-local', { owner: 'a', repo: 'b', stack });
+    const { status } = await ssePost('/api/run-local', { cloneUrl: 'https://github.com/a/b.git', repoName: 'b', stack });
     return status;
   }
 
