@@ -1295,20 +1295,14 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       if (detected === 'complete') {
         req.session.buildMode       = 'complete';
-        req.session.chatPhase       = 'stack_selection';
+        req.session.chatPhase       = 'complete_questioning';
         req.session.questionIndex   = 0;
         req.session.gatheredAnswers = [];
-        req.session.selectedStack   = null;
 
-        const stackIntro = `Great — let's build this properly. 🎯
-
-**First, choose your tech stack.** This tells me exactly which technologies to use so the generated code is ready to run without any rewrites.
-
-Select your stack below, then I'll ask 5 focused questions to understand your requirements fully before writing a single line of code.`;
-
-        req.session.chatHistory.push({ role: 'assistant', content: stackIntro });
-        sendEvent('chunk', { text: stackIntro });
-        sendEvent('done',  { text: stackIntro, showStackSelector: true });
+        const q1 = COMPLETE_QUESTIONS[0];
+        req.session.chatHistory.push({ role: 'assistant', content: q1 });
+        sendEvent('chunk', { text: q1 });
+        sendEvent('done',  { text: q1 });
         return res.end();
 
       } else {
