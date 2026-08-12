@@ -22,7 +22,7 @@
 const express = require('express');
 const antigravity = require('../services/antigravity'); // edit-mode chat + analysis paths
 const { buildWithAntigravity } = require('../services/antigravityBuilder');
-const { analyzePlanPhase, compileSpec } = require('../services/planPhase');
+const { analyzePlanPhase, compileSpec, generateDiscoveryPreview, generateContextualQuestion } = require('../services/planPhase');
 const { getFileContent } = require('../services/githubService');
 const { fullQualityPass } = require('../services/codeQuality');
 const { pooledStream, pooledGenerate } = require('../services/geminiPool');
@@ -1299,10 +1299,25 @@ router.post('/chat', requireAuth, async (req, res) => {
         req.session.questionIndex   = 0;
         req.session.gatheredAnswers = [];
 
-        const q1 = COMPLETE_QUESTIONS[0];
-        req.session.chatHistory.push({ role: 'assistant', content: q1 });
-        sendEvent('chunk', { text: q1 });
-        sendEvent('done',  { text: q1 });
+        sendEvent('status', { message: 'Preparing your product discovery preview…' });
+        const preview = await generateDiscoveryPreview(
+          req.session.originalRequest || trimmedMessage,
+          req.session.planNotes || '',
+          apiKey
+        );
+        const q1 = await generateContextualQuestion({
+          originalRequest: req.session.originalRequest || trimmedMessage,
+          planNotes: req.session.planNotes || '',
+          gatheredAnswers: [],
+          areaIndex: 0,
+          apiKey
+        });
+
+        req.session.lastQuestionSent = q1;
+        const combinedMsg = `${preview}\n\n---\n\n${q1}`;
+        req.session.chatHistory.push({ role: 'assistant', content: combinedMsg });
+        sendEvent('chunk', { text: combinedMsg });
+        sendEvent('done',  { text: combinedMsg });
         return res.end();
 
       } else {
@@ -1371,19 +1386,27 @@ router.post('/chat', requireAuth, async (req, res) => {
     // PHASE: complete_questioning — Q1 through Q5
     // ════════════════════════════════════════════════════════════
     if (req.session.chatPhase === 'complete_questioning') {
-      // Use stack-specific questions if a stack was selected, otherwise fallback to generic
-      const questions = req.session.stackQuestions || COMPLETE_QUESTIONS;
+      const isIDontKnow = /i don'?t know|dunno|not sure|no idea|up to you|you decide|any/i.test(trimmedMessage.trim());
 
-      // Save answer for the current question (expand numbers like 1, 4 to full option text)
-      const currentQ = questions[req.session.questionIndex];
-      const expandedA = expandNumberedAnswer(currentQ, trimmedMessage);
+      const questions = req.session.stackQuestions || COMPLETE_QUESTIONS;
+      const currentQ = req.session.lastQuestionSent || questions[req.session.questionIndex] || 'Question';
+      const expandedA = isIDontKnow
+        ? `I don't know (Recommended default approach for ${currentQ.split('\n')[0].replace(/\*\*/g, '').trim()})`
+        : expandNumberedAnswer(currentQ, trimmedMessage);
+
       req.session.gatheredAnswers.push({ q: currentQ, a: expandedA });
       req.session.chatHistory.push({ role: 'user', content: trimmedMessage });
       req.session.questionIndex++;
 
-      if (req.session.questionIndex < questions.length) {
-        // More questions remain
-        const nextQ = questions[req.session.questionIndex];
+      if (req.session.questionIndex < 5) {
+        const nextQ = await generateContextualQuestion({
+          originalRequest: req.session.originalRequest || '',
+          planNotes: req.session.planNotes || '',
+          gatheredAnswers: req.session.gatheredAnswers,
+          areaIndex: req.session.questionIndex,
+          apiKey
+        });
+        req.session.lastQuestionSent = nextQ;
         req.session.chatHistory.push({ role: 'assistant', content: nextQ });
         sendEvent('chunk', { text: nextQ });
         sendEvent('done',  { text: nextQ });
