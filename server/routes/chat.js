@@ -1561,27 +1561,35 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
     const activeBrief = req.session.buildBrief || enrichedNotes;
 
     // ── PHASE 2: Generate complete app using Antigravity Agent ──────────
-    // Single multi-step call replaces entire complex pipeline:
-    //   OLD: streamChat → fullQualityPass → repair attempts → dryRun fixes
-    //   NEW: buildWithAntigravity (one call, agent handles everything)
-    // Antigravity analyzes, plans, generates, audits, and self-repairs in one request.
-    sendEvent('status', { message: 'Ready4Launch is building your app…' });
+    // Multi-step execution engine call:
+    // Antigravity inspects, plans, generates, audits, self-repairs, and verifies.
+    const onProgress = (state, message) => {
+      sendEvent('status', { state, message });
+    };
 
     let finalText = null;
+    let buildResultObj = null;
     try {
-      finalText = await buildWithAntigravity(activeBrief, req.session.selectedStack, apiKey);
-      console.log('[Chat] ✅ Antigravity build complete');
+      buildResultObj = await buildWithAntigravity(activeBrief, req.session.selectedStack, apiKey, {
+        onProgress,
+        maxRepairAttempts: 2
+      });
+      finalText = typeof buildResultObj === 'string' ? buildResultObj : buildResultObj.output;
+      console.log('[Chat] ✅ Antigravity build complete. Status:', buildResultObj?.buildStatus || 'SUCCESS');
     } catch (buildErr) {
       const errMsg = buildErr.response?.data?.error?.message || buildErr.message;
       console.warn('[Chat] ⚠️ Antigravity builder unavailable, falling back to multi-provider AI pool:', errMsg);
-      sendEvent('status', { message: 'Building your app via multi-provider AI pool…' });
+      sendEvent('status', { state: 'FALLBACK', message: 'Building your app via multi-provider AI pool…' });
 
       try {
         await antigravity.streamChat(processedMessage, buildHistory, null, onChunk, onDone, activeBrief, 'build');
         finalText = capturedText;
       } catch (poolErr) {
         console.error('[Chat] ❌ Multi-provider pool generation failed:', poolErr.message);
-        const keyBlocked = buildErr.code === 'API_KEY_BLOCKED' || /leaked|API key not valid|API key expired/i.test(errMsg);
+        const rawErrStr = (buildErr?.rawMessage || buildErr?.message || '') + ' ' + (poolErr?.rawMessage || poolErr?.message || '');
+        const keyBlocked = buildErr?.code === 'API_KEY_BLOCKED' ||
+                           poolErr?.code === 'API_KEY_BLOCKED' ||
+                           /reported as leaked|API key (?:has been |was )?revoked|API key (?:has been |was )?expired|API key (?:has been |was )?disabled/i.test(rawErrStr);
         sendEvent('error', {
           message: keyBlocked
             ? 'The server\'s Gemini API key is blocked. Ask the operator to create a NEW key in Google AI Studio, update .env, and restart.'
@@ -1596,28 +1604,33 @@ Select your stack below, then I'll ask 5 focused questions to understand your re
       return res.end();
     }
 
-    // Antigravity handles all verification internally, but run optional dry check if stack known
-    let dryResult = null;
-    if (req.session.selectedStack) {
+    // Antigravity handles verification internally; attach metadata and run backup dry check if needed
+    let dryResult = buildResultObj?.verification || null;
+    if (!dryResult && req.session.selectedStack) {
       try {
         const extractedFiles = extractFilesFromText(finalText);
         dryResult = runDryCheck(extractedFiles, req.session.selectedStack);
         if (!dryResult.passed) {
           console.warn('[DryRun] Note: Some issues remain, but Antigravity self-repaired. Proceeding.', dryResult.summary);
-          sendEvent('status', { message: 'Build complete (note: some minor issues remain)' });
+          sendEvent('status', { state: 'COMPLETED_WITH_WARNINGS', message: 'Build complete (note: some minor issues remain)' });
         } else {
           console.log('[DryRun] ✅ All structural checks passed');
-          sendEvent('status', { message: 'Build verified and ready to deploy!' });
+          sendEvent('status', { state: 'VERIFIED', message: 'Build verified and ready to deploy!' });
         }
       } catch (dryErr) {
         console.warn('[DryRun] Check skipped:', dryErr.message);
-        // Non-fatal — Antigravity already verified the code
       }
     }
 
     // Finalise
     req.session.chatHistory.push({ role: 'assistant', content: finalText });
     const donePayload = { text: finalText };
+    if (typeof buildResultObj === 'object' && buildResultObj) {
+      if (buildResultObj.buildStatus) donePayload.buildStatus = buildResultObj.buildStatus;
+      if (buildResultObj.repairCount !== undefined) donePayload.repairCount = buildResultObj.repairCount;
+      if (buildResultObj.interactionId) donePayload.interactionId = buildResultObj.interactionId;
+      if (buildResultObj.environmentId) donePayload.environmentId = buildResultObj.environmentId;
+    }
     if (req.session.editMode) {
       donePayload.editMode  = true;
       donePayload.editOwner = req.session.editMode.owner;
