@@ -833,12 +833,7 @@ function checkForCode(text, hintRepoName, dryRun, deployMode, editContext) {
     }
   }
 
-  // ── Ultimate Failsafe: if text exists, guarantee at least one file so buttons render ──
-  if (!files.length && text && text.trim().length > 30) {
-    files.push({ path: 'index.html', content: text });
-    console.warn('[Ready4Launch] Failsafe activated: wrapped output in index.html');
-  }
-
+  // HARD GUARD: If no actual code files exist, do NOT wrap error text in fake index.html
   if (!files.length) return;
 
   showDeployPrompt(repoName, files, dryRun, deployMode || 'local', editContext);
@@ -1084,6 +1079,9 @@ function loadPendingBuild() {
 }
 
 function showDeployPrompt(repoName, files, dryRun, deployMode, editContext) {
+  // HARD GUARD: Never render deploy prompt card if zero files exist
+  if (!files || !Array.isArray(files) || files.length === 0) return;
+
   // Persist so the user doesn't lose their build on refresh / server restart
   savePendingBuild(repoName, files);
 

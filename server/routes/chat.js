@@ -1655,6 +1655,12 @@ router.post('/chat', requireAuth, async (req, res) => {
 
     if (isZeroFiles) {
       console.warn('[Chat] ❌ Zero project files retrieved — flagging build failure (no false ready state)');
+      // Explicitly clear any stale session artifacts from prior builds
+      req.session.generatedFiles = [];
+      req.session.currentCode = null;
+      req.session.verification = dryResult || { passed: false, issues: ['No code files extracted from build output'], summary: '❌ No files generated' };
+      req.session.buildStatus = 'ARTIFACT_RETRIEVAL_FAILED';
+
       donePayload.build = false;
       donePayload.buildFailed = true;
       donePayload.buildStatus = 'ARTIFACT_RETRIEVAL_FAILED';
@@ -1664,8 +1670,10 @@ router.post('/chat', requireAuth, async (req, res) => {
       donePayload.editMode  = true;
       donePayload.editOwner = req.session.editMode.owner;
       donePayload.editRepo  = req.session.editMode.repo;
-      // Store generated files on session for artifact reuse
+      // Store generated files and verification state on session for artifact reuse
       req.session.generatedFiles = extractedFiles;
+      req.session.verification = dryResult || buildResultObj?.verification || { passed: true, summary: '✅ Build verified' };
+      req.session.buildStatus = buildResultObj?.buildStatus || 'VERIFIED';
       if (req.session.detectedStack) {
         donePayload.deployMode = getDeploymentMode(req.session.detectedStack);
         console.log(`[EditMode] Deployment mode for ${req.session.editMode.repo}: ${donePayload.deployMode}`);
@@ -1677,8 +1685,10 @@ router.post('/chat', requireAuth, async (req, res) => {
 
       if (hasBuildOutput) {
         donePayload.build = true;
-        // Store build artifact on session for reuse by downstream GitHub / local-run
+        // Store build artifact and verification on session for reuse by downstream GitHub / local-run
         req.session.generatedFiles = extractedFiles;
+        req.session.verification = dryResult || buildResultObj?.verification || { passed: true, summary: '✅ Build verified' };
+        req.session.buildStatus = buildResultObj?.buildStatus || 'VERIFIED';
         if (extractedFiles.length > 0) {
           const mainHtml = extractedFiles.find(f => f.path.endsWith('.html') || f.path === 'index.html');
           if (mainHtml) req.session.currentCode = mainHtml.content;

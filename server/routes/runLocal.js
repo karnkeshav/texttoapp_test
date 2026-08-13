@@ -55,9 +55,11 @@ router.post('/run-local', async (req, res) => {
     return res.status(400).json({ error: 'repoName contains invalid characters — only letters, numbers, dots, hyphens and underscores are allowed' });
   }
 
-  // If cloning from GitHub (no direct files provided), enforce GitHub auth and owner/repo validation
-  if (!files) {
-    if (!req.session.githubToken) {
+  const isGitHubCloneRequest = !!(req.body.cloneUrl || req.body.owner || req.body.repo);
+
+  // If cloning from GitHub, enforce GitHub auth and owner/repo validation
+  if (isGitHubCloneRequest) {
+    if (!req.session?.githubToken) {
       return res.status(401).json({ error: 'Not authenticated' });
     }
     if (!req.body.owner && !req.body.cloneUrl) {
@@ -66,9 +68,22 @@ router.post('/run-local', async (req, res) => {
     if (!repoName) {
       return res.status(400).json({ error: 'repoName is required' });
     }
-  } else if (!repoName) {
-    return res.status(400).json({ error: 'repoName is required' });
+  } else {
+    if (!repoName) {
+      return res.status(400).json({ error: 'repoName is required' });
+    }
+    // AUTHORITATIVE GUARD (OPTION A): Require Ready4Launch verified session artifact for direct execution
+    const sessionFiles = req.session?.generatedFiles;
+    const isVerifiedArtifact = Array.isArray(sessionFiles) &&
+      sessionFiles.length > 0 &&
+      req.session?.verification?.passed === true;
+
+    if (!isVerifiedArtifact || !Array.isArray(sessionFiles) || sessionFiles.length === 0) {
+      return res.status(400).json({ error: 'Application cannot be run because no verified build artifact exists.' });
+    }
   }
+
+  const effectiveFiles = isGitHubCloneRequest ? null : req.session?.generatedFiles;
 
   // Reject static HTML + No Backend (GitHub Pages only)
   const fe = (stack.frontend || '').toLowerCase();

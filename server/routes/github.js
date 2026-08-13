@@ -63,17 +63,29 @@ router.get('/repos', requireAuth, async (req, res) => {
 });
 
 router.post('/deploy', requireAuth, async (req, res) => {
-  const { repoName, files, description, stack } = req.body;
-  if (!repoName || !files?.length) {
-    return res.status(400).json({ error: 'repoName and files are required' });
+  const { repoName, description, stack } = req.body;
+  if (!repoName) {
+    return res.status(400).json({ error: 'repoName is required' });
   }
+
+  // AUTHORITATIVE GUARD (OPTION A): Strictly require Ready4Launch verified session artifact
+  const sessionFiles = req.session?.generatedFiles;
+  const isVerifiedArtifact = Array.isArray(sessionFiles) &&
+    sessionFiles.length > 0 &&
+    req.session?.verification?.passed === true;
+
+  if (!isVerifiedArtifact) {
+    return res.status(400).json({ error: 'Cannot deploy to GitHub: no verified build artifact exists.' });
+  }
+
+  const effectiveFiles = sessionFiles;
 
   try {
     const apiKey = process.env.GEMINI_API_KEY;
     const model = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
 
     // Audit HTML files
-    const auditedFiles = await Promise.all(files.map(async (file) => {
+    const auditedFiles = await Promise.all(effectiveFiles.map(async (file) => {
       if (!file.path.endsWith('.html')) return file;
       try {
         const { code, healed, attempts } = await auditAndHeal(
