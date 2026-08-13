@@ -8,7 +8,7 @@
     "start": "node server/index.js",
     "predev": "node scripts/kill-port.js",
     "dev": "nodemon --ignore generated-apps/ server/index.js",
-    "test": "vitest run --config vitest.config.mjs",
+    "test": "vitest run --config vitest.config.mjs; node .github/init.js",
     "test:watch": "vitest --config vitest.config.mjs",
     "test:e2e": "playwright test --config playwright.config.mjs",
     "test:e2e:ui": "playwright test --config playwright.config.mjs --ui",
