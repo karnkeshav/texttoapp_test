@@ -177,7 +177,6 @@ REPO_NAME: sample-verified-app
     });
 
     it('triggers self-repair loop when initial build fails verification', async () => {
-      // First attempt has unclosed tag (fails verification)
       const brokenOutput = `
 REPO_NAME: repair-test-app
 
@@ -193,7 +192,6 @@ REPO_NAME: repair-test-app
 \`\`\`
       `;
 
-      // Second attempt (after self-repair) is fixed
       const fixedOutput = `
 REPO_NAME: repair-test-app
 
@@ -288,6 +286,70 @@ REPO_NAME: repair-test-app
       expect(sentPrompt).toContain('Backend: nodejs');
       expect(result.repoName).toBe('react-node-app');
       expect(result.buildStatus).toBe('VERIFIED');
+    });
+
+    it('returns ARTIFACT_RETRIEVAL_FAILED hard failure when zero code files are extracted', async () => {
+      const zeroFileOutput = `
+Antigravity completed interaction but output contains no code blocks.
+REPO_NAME: empty-app
+`;
+
+      vi.spyOn(axios, 'post').mockResolvedValue({
+        data: {
+          id: 'interaction-empty',
+          output: zeroFileOutput,
+          status: 'completed'
+        }
+      });
+
+      const statesEmitted = [];
+      const onProgress = (state) => statesEmitted.push(state);
+
+      const stack = { frontend: 'html', backend: 'none', type: 'static' };
+      const result = await buildWithAntigravity('Build empty app', stack, 'valid-api-key', { onProgress });
+
+      expect(result.files).toHaveLength(0);
+      expect(result.buildStatus).toBe('ARTIFACT_RETRIEVAL_FAILED');
+      expect(result.verification.passed).toBe(false);
+      expect(statesEmitted).toContain('BUILD_FAILED');
+      expect(statesEmitted).not.toContain('COMPLETED');
+    });
+
+    it('retains initial valid files when self-repair encounters 429 rate limit', async () => {
+      const initialOutputWithMinorIssue = `
+REPO_NAME: rate-limit-test-app
+
+\`\`\`html
+<!-- FILE: index.html -->
+<!DOCTYPE html>
+<html>
+<head><title>App</title></head>
+<body>
+  <div>Unclosed div
+</body>
+</html>
+\`\`\`
+      `;
+
+      vi.spyOn(axios, 'post')
+        .mockResolvedValueOnce({
+          data: {
+            id: 'interaction-1',
+            output: initialOutputWithMinorIssue,
+            status: 'completed'
+          }
+        })
+        .mockRejectedValueOnce({
+          response: { status: 429, data: { error: { message: 'Rate limit exceeded' } } },
+          code: 'RATE_LIMITED'
+        });
+
+      const stack = { frontend: 'html', backend: 'none', type: 'static' };
+      const result = await buildWithAntigravity('Build app', stack, 'valid-api-key', { maxRepairAttempts: 2 });
+
+      expect(result.files).toHaveLength(1);
+      expect(result.files[0].path).toBe('index.html');
+      expect(result.buildStatus).toBe('REPAIR_BLOCKED');
     });
   });
 });

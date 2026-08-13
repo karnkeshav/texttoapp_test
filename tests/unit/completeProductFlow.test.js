@@ -215,4 +215,46 @@ describe('Complete Product Semantic Discovery Workflow Tests', () => {
     expect(_currentSession.compiledSpec).toBeDefined();
   });
 
+  test('TEST 8: Question 5 explicitly asks contextual UI/UX & Experience questions', async () => {
+    const q5 = await generateContextualQuestion({
+      originalRequest: 'Create an app for a bookstore.',
+      planNotes: 'Domain: bookstore application',
+      gatheredAnswers: [
+        { q: 'Q1', a: 'Browse books' },
+        { q: 'Q2', a: 'Customers & staff' },
+        { q: 'Q3', a: 'Book inventory' },
+        { q: 'Q4', a: 'Search & filter' }
+      ],
+      areaIndex: 4,
+      apiKey: 'mock-test-api-key'
+    });
+
+    expect(q5).toContain('Question 5 of 5');
+    expect(q5.toLowerCase()).toMatch(/experience|ui\/ux|design|look and feel/);
+  });
+
+  test('TEST 9: UI/UX choices from Q5 are recorded in gatheredAnswers and compiledSpec', async () => {
+    _currentSession = {
+      chatPhase: 'complete_questioning',
+      questionIndex: 4,
+      gatheredAnswers: [
+        { q: 'Q1', a: 'Browse books' },
+        { q: 'Q2', a: 'Customers & staff' },
+        { q: 'Q3', a: 'Book inventory' },
+        { q: 'Q4', a: 'Search & filter' }
+      ],
+      chatHistory: [],
+      originalRequest: 'Create an app for a bookstore.',
+      planNotes: 'Domain: bookstore application'
+    };
+
+    const uiuxAnswer = 'I want a clean modern bookstore catalogue with a dark theme, large covers, and mobile-friendly bottom navigation.';
+    const res = await postChatSSE({ message: uiuxAnswer });
+    expect(res.statusCode).toBe(200);
+
+    expect(_currentSession.gatheredAnswers.length).toBe(5);
+    expect(_currentSession.gatheredAnswers[4].a).toBe(uiuxAnswer);
+    expect(_currentSession.compiledSpec).toBeDefined();
+  });
+
 });

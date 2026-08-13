@@ -1642,53 +1642,64 @@ router.post('/chat', requireAuth, async (req, res) => {
     // Finalise
     req.session.chatHistory.push({ role: 'assistant', content: finalText });
     const donePayload = { text: finalText };
+
+    const extractedFiles = (buildResultObj?.files) || extractFilesFromText(finalText);
+    const isZeroFiles = !extractedFiles || extractedFiles.length === 0 || buildResultObj?.buildStatus === 'ARTIFACT_RETRIEVAL_FAILED';
+
     if (typeof buildResultObj === 'object' && buildResultObj) {
-      if (buildResultObj.buildStatus) donePayload.buildStatus = buildResultObj.buildStatus;
+      if (buildResultObj.buildStatus) donePayload.buildStatus = isZeroFiles ? 'ARTIFACT_RETRIEVAL_FAILED' : buildResultObj.buildStatus;
       if (buildResultObj.repairCount !== undefined) donePayload.repairCount = buildResultObj.repairCount;
       if (buildResultObj.interactionId) donePayload.interactionId = buildResultObj.interactionId;
       if (buildResultObj.environmentId) donePayload.environmentId = buildResultObj.environmentId;
     }
-    if (req.session.editMode) {
+
+    if (isZeroFiles) {
+      console.warn('[Chat] ❌ Zero project files retrieved — flagging build failure (no false ready state)');
+      donePayload.build = false;
+      donePayload.buildFailed = true;
+      donePayload.buildStatus = 'ARTIFACT_RETRIEVAL_FAILED';
+      donePayload.error = 'Antigravity completed its interaction, but Ready4Launch could not retrieve the generated project files. The application has not been marked as ready.';
+      sendEvent('status', { state: 'ARTIFACT_RETRIEVAL_FAILED', message: donePayload.error });
+    } else if (req.session.editMode) {
       donePayload.editMode  = true;
       donePayload.editOwner = req.session.editMode.owner;
       donePayload.editRepo  = req.session.editMode.repo;
-      // Include deployment mode for edit mode using detected stack
+      // Store generated files on session for artifact reuse
+      req.session.generatedFiles = extractedFiles;
       if (req.session.detectedStack) {
         donePayload.deployMode = getDeploymentMode(req.session.detectedStack);
         console.log(`[EditMode] Deployment mode for ${req.session.editMode.repo}: ${donePayload.deployMode}`);
       }
     } else {
-      // Flag the frontend explicitly when this is a build response.
-      // This lets the client show the deploy button even if its own
-      // regex-parsing of the large HTML payload fails.
+      // Flag frontend for valid build response ONLY when files exist
       const hasBuildOutput = /REPO_NAME\s*:/i.test(finalText) ||
         /```(?:html|json|go|python|py|ruby|rb|rust|rs|php)/i.test(finalText);
+
       if (hasBuildOutput) {
         donePayload.build = true;
-        // Also extract REPO_NAME server-side as a reliable fallback
+        // Store build artifact on session for reuse by downstream GitHub / local-run
+        req.session.generatedFiles = extractedFiles;
+        if (extractedFiles.length > 0) {
+          const mainHtml = extractedFiles.find(f => f.path.endsWith('.html') || f.path === 'index.html');
+          if (mainHtml) req.session.currentCode = mainHtml.content;
+        }
+
         const rn = finalText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
         if (rn) donePayload.repoName = rn[1].toLowerCase();
 
-        // ── Include final dry run result ──────────────────────────
         if (dryResult) {
           donePayload.dryRun = dryResult;
           console.log(`[DryRun] Final result: ${dryResult.summary}`);
         }
-        // Bug 3 Fix B — carry original repo when user changed stack mid-edit
         if (req.session.originalEditRepo) {
           donePayload.isStackRebuild = true;
           donePayload.targetRepo     = req.session.originalEditRepo;
           req.session.originalEditRepo = null;
         }
-        // Include deployment mode so frontend shows correct CTA
-        // Use selected stack if available, otherwise fall back to detected stack
-        // 🔴 BUG FIX #3: Verify stack has all required fields
         let stackForDeployment = req.session.selectedStack || req.session.detectedStack;
         if (stackForDeployment) {
-          // Ensure all required fields are present
           if (!stackForDeployment.frontend || !stackForDeployment.backend || !stackForDeployment.type) {
             console.warn('[DeployMode] Stack missing fields, rebuilding:', stackForDeployment);
-            // Attempt to rebuild with detected info
             const detected = req.session.detectedStack || {};
             stackForDeployment = {
               frontend: stackForDeployment.frontend || detected.frontend || 'html',

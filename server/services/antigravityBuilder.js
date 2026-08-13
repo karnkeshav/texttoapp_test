@@ -264,6 +264,36 @@ Execute the build workflow now. Create files, verify, self-repair if needed, and
   onProgress('TESTING', 'Running project verification checks...');
   let verification = verifyProject(files, stack);
   let repairCount = 0;
+  let isRateLimited = false;
+
+  // HARD FAILURE: If no files extracted, skip repair loop and mark ARTIFACT_RETRIEVAL_FAILED
+  if (files.length === 0) {
+    console.error('[AntigravityBuilder] HARD FAILURE: Zero code files extracted from build output');
+    const buildStatus = 'ARTIFACT_RETRIEVAL_FAILED';
+    onProgress('BUILD_FAILED', 'Antigravity completed its interaction, but Ready4Launch could not retrieve the generated project files.');
+
+    let repoName = 'ready4launch-app';
+    const repoMatch = outputText.match(/REPO_NAME:\s*([a-z0-9][a-z0-9\-]{1,48}[a-z0-9])/i);
+    if (repoMatch) repoName = repoMatch[1].toLowerCase();
+
+    return {
+      output: outputText,
+      repoName,
+      files: [],
+      buildStatus,
+      verification,
+      repairCount: 0,
+      interactionId,
+      environmentId,
+      executionMetadata: {
+        agent: agentId,
+        environment: 'remote',
+        elapsedMs: Date.now() - startTime,
+        usage
+      },
+      toString() { return this.output; }
+    };
+  }
 
   while (!verification.passed && repairCount < maxRepairAttempts) {
     repairCount++;
@@ -271,7 +301,7 @@ Execute the build workflow now. Create files, verify, self-repair if needed, and
     console.warn('[AntigravityBuilder] Issues:', verification.issues);
 
     onProgress('DIAGNOSING', `Diagnosing ${verification.issues.length} build verification issue(s)...`);
-    
+
     const repairPrompt = `${ANTIGRAVITY_SYSTEM_EXECUTION_CONTRACT}
 
 === SELF-REPAIR TURN (ATTEMPT ${repairCount}/${maxRepairAttempts}) ===
@@ -300,21 +330,34 @@ Diagnose and repair all reported issues above. Return the complete, updated proj
       const repairedText = parseAgentOutput(repairResponse);
 
       if (repairedText && repairedText.length > 100) {
-        outputText = repairedText;
-        files = extractFilesFromText(outputText);
-        onProgress('REBUILDING', 'Rebuilding updated project...');
-        onProgress('VERIFYING', 'Retesting repaired project...');
-        verification = verifyProject(files, stack);
+        const newFiles = extractFilesFromText(repairedText);
+        if (newFiles.length > 0) {
+          outputText = repairedText;
+          files = newFiles;
+          onProgress('REBUILDING', 'Rebuilding updated project...');
+          onProgress('VERIFYING', 'Retesting repaired project...');
+          verification = verifyProject(files, stack);
+        }
       }
     } catch (repairErr) {
-      console.warn(`[AntigravityBuilder] Repair attempt ${repairCount} failed:`, repairErr.message);
-      break; // Stop repair loop on API error and return current progress
+      if (repairErr.code === 'RATE_LIMITED' || repairErr.response?.status === 429) {
+        isRateLimited = true;
+        console.warn(`[AntigravityBuilder] Repair attempt ${repairCount} rate-limited (429). Retaining initial valid files (${files.length} file(s)).`);
+      } else {
+        console.warn(`[AntigravityBuilder] Repair attempt ${repairCount} failed:`, repairErr.message);
+      }
+      break; // Stop repair loop on API error and retain initial valid files
     }
   }
 
   onProgress('VERIFYING', 'Finalizing verification report...');
-  const buildStatus = verification.passed ? 'VERIFIED' : 'COMPLETED_WITH_WARNINGS';
-  onProgress('COMPLETED', verification.passed ? 'Verified project ready for deployment!' : 'Build completed with warnings.');
+  let buildStatus = verification.passed ? 'VERIFIED' : (isRateLimited ? 'REPAIR_BLOCKED' : 'COMPLETED_WITH_WARNINGS');
+  onProgress(
+    verification.passed ? 'COMPLETED' : (isRateLimited ? 'REPAIR_BLOCKED' : 'COMPLETED_WITH_WARNINGS'),
+    verification.passed
+      ? 'Verified project ready for deployment!'
+      : (isRateLimited ? 'Self-repair rate limited; initial project files retained.' : 'Build completed with warnings.')
+  );
 
   // Extract repoName
   let repoName = 'ready4launch-app';

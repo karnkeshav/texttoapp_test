@@ -144,23 +144,23 @@ async function compileSpec(gatheredAnswers, originalRequest, apiKey) {
 
   const prompt = `You are a senior product manager writing a build brief for an AI frontend developer.
 
-Based on this requirements interview, write a focused specification (200–350 words) covering:
+Based on this requirements interview, write a focused specification (250–400 words) covering:
 1. Core purpose — what the app does and the problem it solves
 2. Target users — who uses it, their context, technical level
 3. Must-have features — numbered list, specific
 4. Technical / UX constraints (offline, mobile-first, data export, etc.)
-5. Visual direction — style, mood, colours
+5. UI/UX & EXPERIENCE — visual style, layout, navigation, mobile/desktop expectations, color/theme, components, search/filter UX, and interaction patterns.
 
 Original request: "${originalRequest}"
 
 Interview Q&A:
 ${qaText}
 
-Write in imperative, builder-focused language. Be specific and actionable. No waffle.`;
+Write in imperative, builder-focused language. Be specific and actionable. No waffle. Include an explicit "UI/UX & EXPERIENCE" section.`;
 
   return pooledGenerate({
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    config: { temperature: 0.3, maxOutputTokens: 700 },
+    config: { temperature: 0.3, maxOutputTokens: 800 },
     apiKey,
   });
 }
@@ -262,10 +262,11 @@ Task: Write ONE targeted, non-repetitive question for: ${qNumber} — ${currentA
 
 Rules:
 1. Acknowledge what the user has ALREADY specified in their prompt or answers. DO NOT ask them to repeat facts already known.
-2. If the user said "I don't know" in their last answer, acknowledge it warmly, state a recommended default approach, and ask the next question.
+2. If the user said "I don't know" in their last answer, acknowledge it warmly, state a recommended default approach (e.g. recommended UI/UX style or storage pattern for this domain), and ask the next question.
 3. Use domain-specific terms from their prompt (e.g. bookstore, books, inventory, customers, stock).
-4. Make the question specific, actionable, and easy for a non-technical user to answer.
-5. Format the question heading exactly as: "**${qNumber} — ${currentAreaTitle}:**" followed by the question.`;
+4. For Area 5 (Experience + Design), explicitly ask what kind of interface, layout, navigation, visual style, or device experience they want for their app.
+5. Make the question specific, actionable, and easy for a non-technical user to answer.
+6. Format the question heading exactly as: "**${qNumber} — ${currentAreaTitle}:**" followed by the question.`;
 
   try {
     const text = await pooledGenerate({
@@ -295,7 +296,10 @@ Rules:
   if (areaIndex === 3) {
     return `**${qNumber} — Integrations + Live Functionality:** Are there any specific live features needed, such as data export (CSV/PDF), search/filtering, notifications, or third-party API connections?`;
   }
-  return `**${qNumber} — Experience + Design:** What visual style and mood fits best (e.g. Dark & Sleek, Light & Clean, Minimal Pro), and are there any specific brand colors or palettes you prefer?`;
+  if (isBookstore) {
+    return `**${qNumber} — Experience & UI/UX:** How would you like the bookstore app to look and feel? For example, a clean modern catalogue, a premium bookstore experience, an Amazon-style shopping interface, a simple library-style interface, or something else?`;
+  }
+  return `**${qNumber} — Experience & UI/UX:** What visual style, layout, and user experience would you prefer (e.g. Dark & Sleek, Light & Clean, Minimal Pro), and are there any specific navigation or device layout preferences?`;
 }
 
 module.exports = { analyzePlanPhase, compileSpec, generateDiscoveryPreview, generateContextualQuestion };
